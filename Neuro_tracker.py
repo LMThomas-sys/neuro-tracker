@@ -19,11 +19,11 @@ st.set_page_config(
     page_icon="🧠"
 )
 
-# Helper function to hash passwords
+# Password hashing
 def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
-# Connect to Turso Cloud DB (or local fallback)
+# Database Connection
 def get_connection():
     if "TURSO_URL" in st.secrets:
         return libsql.connect(
@@ -41,7 +41,7 @@ def init_db():
         conn.sync()
     c = conn.cursor()
     
-    # 1. Users Table (Authentication & Access Control)
+    # 1. Users Table
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
@@ -94,13 +94,10 @@ def init_db():
         )
     ''')
     
-    # Default initial accounts if database is new
+    # Default initial accounts
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
-        # Create Doctor account (Default Pass: doc123)
         c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", ("drananda", hash_password("doc123"), "doctor", "ALL"))
-        
-        # Create Linda's Profile & Account (Default Pass: linda123)
         c.execute("INSERT INTO patient_profiles VALUES ('P001', 'Linda Marcia Thomas', 'Trigeminal Neuralgia & SNHL', 'Right Retrosigmoid Craniotomy / MVD', 'CN V, CN VIII', '2026-10-08')")
         c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", ("linda", hash_password("linda123"), "patient", "P001"))
 
@@ -143,10 +140,9 @@ if not st.session_state['authenticated']:
                 st.error("Invalid Username or Password.")
     st.stop()
 
-# --- MAIN APP FOR LOGGED-IN USERS ---
+# --- LOGGED IN APPLICATION ---
 
-# Sidebar Logout Button
-st.sidebar.write(f"Logged in as: **{st.session_state['username']}** ({st.session_state['user_role'].title()})")
+st.sidebar.write(f"Logged in: **{st.session_state['username']}** ({st.session_state['user_role'].title()})")
 if st.sidebar.button("Logout"):
     st.session_state['authenticated'] = False
     st.rerun()
@@ -157,7 +153,6 @@ st.title("🧠 Neuro-Tracker Platform")
 conn = get_connection()
 
 if st.session_state['user_role'] == 'doctor':
-    # Doctor sees all patients
     profiles_df = pd.read_sql_query("SELECT * FROM patient_profiles", conn)
     selected_patient_id = st.sidebar.selectbox(
         "👤 Select Patient Profile",
@@ -165,7 +160,6 @@ if st.session_state['user_role'] == 'doctor':
         format_func=lambda pid: f"{pid} - {profiles_df[profiles_df['patient_id'] == pid]['patient_name'].values[0]}"
     )
 else:
-    # Patient sees ONLY their own profile
     profiles_df = pd.read_sql_query(
         "SELECT * FROM patient_profiles WHERE patient_id = ?", 
         conn, params=(st.session_state['assigned_patient_id'],)
@@ -177,35 +171,90 @@ conn.close()
 active_profile = profiles_df[profiles_df['patient_id'] == selected_patient_id].iloc[0]
 st.sidebar.info(f"**Patient:** {active_profile['patient_name']}\n\n**Procedure:** {active_profile['procedure_type']}\n\n**Nerves:** {active_profile['affected_cranial_nerves']}")
 
-# Doctor-Only: Register New Patient / User
+# --- DOCTOR-ONLY: REGISTER PATIENT & ADMIN PASSWORD RESET ---
 if st.session_state['user_role'] == 'doctor':
     with st.sidebar.expander("➕ Register New Patient"):
-        new_id = st.text_input("Patient ID (e.g., P002)")
-        new_name = st.text_input("Full Name")
-        new_username = st.text_input("Login Username")
-        new_pass = st.text_input("Initial Password", type="password")
-        new_diag = st.text_input("Diagnosis")
-        new_proc = st.text_input("Procedure")
-        new_nerves = st.multiselect("Affected Cranial Nerves", ["CN V (Trigeminal)", "CN VII (Facial)", "CN VIII (Vestibulocochlear)", "CN IX/X"])
-        
-        if st.button("Create Account & Profile"):
-            if new_id and new_name and new_username and new_pass:
+        with st.form("register_patient_form"):
+            new_id = st.text_input("Patient ID (e.g., P002)")
+            new_name = st.text_input("Full Name")
+            new_username = st.text_input("Login Username").strip().lower()
+            new_pass = st.text_input("Initial Password", type="password")
+            new_diag = st.text_input("Diagnosis")
+            new_proc = st.text_input("Procedure")
+            new_nerves = st.multiselect("Affected Nerves", ["CN V (Trigeminal)", "CN VII (Facial)", "CN VIII (Vestibulocochlear)", "CN IX/X"])
+            reg_submit = st.form_submit_button("Create Account & Profile")
+            
+            if reg_submit:
+                if new_id and new_name and new_username and new_pass:
+                    conn = get_connection()
+                    c = conn.cursor()
+                    try:
+                        c.execute("INSERT INTO patient_profiles VALUES (?, ?, ?, ?, ?, ?)", (
+                            new_id, new_name, new_diag, new_proc, ", ".join(new_nerves), str(datetime.date.today())
+                        ))
+                        c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (
+                            new_username, hash_password(new_pass), "patient", new_id
+                        ))
+                        conn.commit()
+                        if hasattr(conn, 'sync'):
+                            conn.sync()
+                        st.success(f"Registered {new_name} ({new_username}) successfully!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error registering user (ID or Username may already exist): {e}")
+                    finally:
+                        conn.close()
+                else:
+                    st.warning("Please fill in all required fields.")
+
+    with st.sidebar.expander("🛠️ Reset Patient Password"):
+        with st.form("reset_patient_pass_form"):
+            conn = get_connection()
+            all_users = pd.read_sql_query("SELECT username FROM users WHERE role = 'patient'", conn)
+            conn.close()
+            target_user = st.selectbox("Select Patient Account", all_users['username'].tolist() if not all_users.empty else [])
+            admin_new_pass = st.text_input("Set New Password", type="password")
+            reset_submit = st.form_submit_button("Reset Password")
+            
+            if reset_submit and target_user and admin_new_pass:
                 conn = get_connection()
                 c = conn.cursor()
-                # Insert Profile
-                c.execute("INSERT INTO patient_profiles VALUES (?, ?, ?, ?, ?, ?)", (
-                    new_id, new_name, new_diag, new_proc, ", ".join(new_nerves), str(datetime.date.today())
-                ))
-                # Insert Patient User Account
-                c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (
-                    new_username.lower(), hash_password(new_pass), "patient", new_id
-                ))
+                c.execute("UPDATE users SET password_hash = ? WHERE username = ?", (hash_password(admin_new_pass), target_user))
                 conn.commit()
                 if hasattr(conn, 'sync'):
                     conn.sync()
                 conn.close()
-                st.success(f"Registered patient {new_name}!")
-                st.rerun()
+                st.success(f"Password reset successfully for {target_user}!")
+
+# --- SELF-SERVICE: CHANGE MY PASSWORD (AVAILABLE TO ALL USERS) ---
+with st.sidebar.expander("🔑 Change My Password"):
+    with st.form("change_my_password_form"):
+        curr_pass = st.text_input("Current Password", type="password")
+        new_pass_1 = st.text_input("New Password", type="password")
+        new_pass_2 = st.text_input("Confirm New Password", type="password")
+        change_submit = st.form_submit_button("Update Password")
+        
+        if change_submit:
+            if new_pass_1 != new_pass_2:
+                st.error("New passwords do not match.")
+            elif len(new_pass_1) < 4:
+                st.error("New password must be at least 4 characters long.")
+            else:
+                conn = get_connection()
+                c = conn.cursor()
+                c.execute("SELECT password_hash FROM users WHERE username = ?", (st.session_state['username'],))
+                current_hash = c.fetchone()[0]
+                
+                if current_hash == hash_password(curr_pass):
+                    c.execute("UPDATE users SET password_hash = ? WHERE username = ?", (hash_password(new_pass_1), st.session_state['username']))
+                    conn.commit()
+                    if hasattr(conn, 'sync'):
+                        conn.sync()
+                    conn.close()
+                    st.success("Your password has been updated!")
+                else:
+                    conn.close()
+                    st.error("Current password is incorrect.")
 
 # --- DAILY LOG ENTRY FORM ---
 st.sidebar.header(f"📝 Log Entry for {active_profile['patient_name']}")
@@ -220,7 +269,7 @@ diastolic = st.sidebar.number_input("Diastolic BP (mmHg)", 50, 130, 80)
 pulse = st.sidebar.number_input("Pulse (bpm)", 40, 180, 72)
 temperature = st.sidebar.number_input("Temp (°C)", 35.0, 41.0, 36.8, step=0.1)
 
-# Dynamic Symptoms Based on Patient Profile
+# Dynamic Symptoms
 trigeminal_pain, facial_numbness, jaw_stiffness, eye_dryness = 0, 0, 0, 0
 facial_weakness = 0
 snhl_hearing_clarity, ear_fullness, dizziness_vertigo = 0, 0, 0
@@ -284,7 +333,7 @@ if st.sidebar.button("Save Daily Log", type="primary"):
     conn.close()
     st.sidebar.success(f"Saved {time_of_day} entry!")
 
-# --- DASHBOARD (RESTRICTED TO SELECTED PATIENT) ---
+# --- MAIN DASHBOARD ---
 conn = get_connection()
 df = pd.read_sql_query(
     "SELECT * FROM multi_patient_logs WHERE patient_id = ? ORDER BY date ASC, entry_time ASC",
