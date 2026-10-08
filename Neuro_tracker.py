@@ -23,7 +23,7 @@ st.set_page_config(
 def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
-# Connect to Turso Cloud DB (or local fallback for testing)
+# Connect to Turso Cloud DB (or local fallback)
 def get_connection():
     if "TURSO_URL" in st.secrets:
         return libsql.connect(
@@ -47,14 +47,14 @@ def init_db():
             username TEXT PRIMARY KEY,
             password_hash TEXT,
             role TEXT, -- 'doctor' or 'patient'
-            patient_id TEXT
+            patient_id TEXT -- Stores Hospital MRN
         )
     ''')
 
-    # 2. Patient Profiles Table
+    # 2. Patient Profiles Table (Indexed by MRN)
     c.execute('''
         CREATE TABLE IF NOT EXISTS patient_profiles (
-            patient_id TEXT PRIMARY KEY,
+            patient_id TEXT PRIMARY KEY, -- Hospital MRN Number
             patient_name TEXT,
             diagnosis TEXT,
             procedure_type TEXT,
@@ -66,7 +66,7 @@ def init_db():
     # 3. Daily Logs Table
     c.execute('''
         CREATE TABLE IF NOT EXISTS multi_patient_logs (
-            patient_id TEXT,
+            patient_id TEXT, -- Hospital MRN Number
             date TEXT,
             time_of_day TEXT,
             entry_time TEXT,
@@ -94,15 +94,15 @@ def init_db():
         )
     ''')
     
-    # Pre-populate default accounts on initial launch
+    # Pre-populate default accounts on initial launch using MRN format
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
         # Create Doctor account (Default Pass: doc123)
         c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", ("drananda", hash_password("doc123"), "doctor", "ALL"))
         
         # Create Linda's Profile & Account (Default Pass: linda123)
-        c.execute("INSERT INTO patient_profiles VALUES ('P001', 'Linda Marcia Thomas', 'Trigeminal Neuralgia & SNHL', 'Right Retrosigmoid Craniotomy / MVD', 'CN V, CN VIII', '2026-10-08')")
-        c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", ("linda", hash_password("linda123"), "patient", "P001"))
+        c.execute("INSERT INTO patient_profiles VALUES ('MRN-0010826', 'Linda Marcia Thomas', 'Trigeminal Neuralgia & SNHL', 'Right Retrosigmoid Craniotomy / MVD', 'CN V, CN VIII', '2026-10-08')")
+        c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", ("linda", hash_password("linda123"), "patient", "MRN-0010826"))
 
     conn.commit()
     conn.close()
@@ -116,7 +116,6 @@ if 'authenticated' not in st.session_state:
     st.session_state['assigned_patient_id'] = None
     st.session_state['username'] = None
 
-# Preserve initial clock time for the entry form session
 if 'default_log_time' not in st.session_state:
     st.session_state['default_log_time'] = datetime.datetime.now().time()
 
@@ -160,15 +159,13 @@ st.title("🧠 Neuro-Tracker Platform")
 conn = get_connection()
 
 if st.session_state['user_role'] == 'doctor':
-    # Doctor can select any patient profile
     profiles_df = pd.read_sql_query("SELECT * FROM patient_profiles", conn)
     selected_patient_id = st.sidebar.selectbox(
-        "👤 Select Patient Profile",
+        "👤 Select Patient (Hospital MRN)",
         options=profiles_df['patient_id'].tolist(),
-        format_func=lambda pid: f"{pid} - {profiles_df[profiles_df['patient_id'] == pid]['patient_name'].values[0]}"
+        format_func=lambda mrn: f"[{mrn}] - {profiles_df[profiles_df['patient_id'] == mrn]['patient_name'].values[0]}"
     )
 else:
-    # Patient sees ONLY their own profile
     profiles_df = pd.read_sql_query(
         "SELECT * FROM patient_profiles WHERE patient_id = ?", 
         conn, params=(st.session_state['assigned_patient_id'],)
@@ -178,39 +175,39 @@ else:
 conn.close()
 
 active_profile = profiles_df[profiles_df['patient_id'] == selected_patient_id].iloc[0]
-st.sidebar.info(f"**Patient:** {active_profile['patient_name']}\n\n**Procedure:** {active_profile['procedure_type']}\n\n**Nerves:** {active_profile['affected_cranial_nerves']}")
+st.sidebar.info(f"**MRN:** {active_profile['patient_id']}\n\n**Patient:** {active_profile['patient_name']}\n\n**Procedure:** {active_profile['procedure_type']}\n\n**Nerves:** {active_profile['affected_cranial_nerves']}")
 
-# --- DOCTOR-ONLY: REGISTER PATIENT & ADMIN PASSWORD RESET ---
+# --- DOCTOR-ONLY: REGISTER PATIENT VIA HOSPITAL MRN & RESET PASSWORDS ---
 if st.session_state['user_role'] == 'doctor':
-    with st.sidebar.expander("➕ Register New Patient"):
+    with st.sidebar.expander("➕ Register New Patient (MRN)"):
         with st.form("register_patient_form"):
-            new_id = st.text_input("Patient ID (e.g., P002)")
-            new_name = st.text_input("Full Name")
-            new_username = st.text_input("Login Username").strip().lower()
+            new_mrn = st.text_input("Hospital MRN (e.g., MRN-884012)").strip().upper()
+            new_name = st.text_input("Patient Full Name")
+            new_username = st.text_input("Patient Portal Username").strip().lower()
             new_pass = st.text_input("Initial Password", type="password")
             new_diag = st.text_input("Diagnosis")
             new_proc = st.text_input("Procedure")
             new_nerves = st.multiselect("Affected Nerves", ["CN V (Trigeminal)", "CN VII (Facial)", "CN VIII (Vestibulocochlear)", "CN IX/X"])
-            reg_submit = st.form_submit_button("Create Account & Profile")
+            reg_submit = st.form_submit_button("Register Patient")
             
             if reg_submit:
-                if new_id and new_name and new_username and new_pass:
+                if new_mrn and new_name and new_username and new_pass:
                     conn = get_connection()
                     c = conn.cursor()
                     try:
                         c.execute("INSERT INTO patient_profiles VALUES (?, ?, ?, ?, ?, ?)", (
-                            new_id, new_name, new_diag, new_proc, ", ".join(new_nerves), str(datetime.date.today())
+                            new_mrn, new_name, new_diag, new_proc, ", ".join(new_nerves), str(datetime.date.today())
                         ))
                         c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (
-                            new_username, hash_password(new_pass), "patient", new_id
+                            new_username, hash_password(new_pass), "patient", new_mrn
                         ))
                         conn.commit()
                         if hasattr(conn, 'sync'):
                             conn.sync()
-                        st.success(f"Registered {new_name} ({new_username}) successfully!")
+                        st.success(f"Registered {new_name} (MRN: {new_mrn}) successfully!")
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Error registering user (ID or Username may already exist): {e}")
+                        st.error(f"Error registering user (MRN or Username already exists): {e}")
                     finally:
                         conn.close()
                 else:
@@ -219,9 +216,15 @@ if st.session_state['user_role'] == 'doctor':
     with st.sidebar.expander("🛠️ Reset Patient Password"):
         with st.form("reset_patient_pass_form"):
             conn = get_connection()
-            all_users = pd.read_sql_query("SELECT username FROM users WHERE role = 'patient'", conn)
+            all_users = pd.read_sql_query("SELECT username, patient_id FROM users WHERE role = 'patient'", conn)
             conn.close()
-            target_user = st.selectbox("Select Patient Account", all_users['username'].tolist() if not all_users.empty else [])
+            
+            user_options = all_users['username'].tolist() if not all_users.empty else []
+            target_user = st.selectbox(
+                "Select Patient Account", 
+                user_options,
+                format_func=lambda u: f"{u} (MRN: {all_users[all_users['username'] == u]['patient_id'].values[0]})" if not all_users.empty else u
+            )
             admin_new_pass = st.text_input("Set New Password", type="password")
             reset_submit = st.form_submit_button("Reset Password")
             
@@ -235,7 +238,7 @@ if st.session_state['user_role'] == 'doctor':
                 conn.close()
                 st.success(f"Password reset successfully for {target_user}!")
 
-# --- SELF-SERVICE: CHANGE MY PASSWORD (AVAILABLE TO ALL) ---
+# --- SELF-SERVICE: CHANGE MY PASSWORD ---
 with st.sidebar.expander("🔑 Change My Password"):
     with st.form("change_my_password_form"):
         curr_pass = st.text_input("Current Password", type="password")
@@ -271,7 +274,6 @@ st.sidebar.header(f"📝 Log Entry for {active_profile['patient_name']}")
 log_date = st.sidebar.date_input("Log Date", datetime.date.today())
 time_of_day = st.sidebar.selectbox("Session Slot", ["Morning (AM)", "Afternoon (PM)", "Evening / Night (PM)"])
 
-# State-locked time input (prevents auto-reset when sliders move)
 exact_time = st.sidebar.time_input(
     "Time Taken", 
     value=st.session_state['default_log_time'], 
@@ -284,7 +286,7 @@ diastolic = st.sidebar.number_input("Diastolic BP (mmHg)", 50, 130, 80)
 pulse = st.sidebar.number_input("Pulse (bpm)", 40, 180, 72)
 temperature = st.sidebar.number_input("Temp (°C)", 35.0, 41.0, 36.8, step=0.1)
 
-# Dynamic Symptom Checkers
+# Dynamic Symptoms
 trigeminal_pain, facial_numbness, jaw_stiffness, eye_dryness = 0, 0, 0, 0
 facial_weakness = 0
 snhl_hearing_clarity, ear_fullness, dizziness_vertigo = 0, 0, 0
@@ -346,9 +348,9 @@ if st.sidebar.button("Save Daily Log", type="primary"):
     if hasattr(conn, 'sync'):
         conn.sync()
     conn.close()
-    st.sidebar.success(f"Saved {time_of_day} entry!")
+    st.sidebar.success(f"Saved {time_of_day} entry for MRN {selected_patient_id}!")
 
-# --- MAIN DASHBOARD AREA ---
+# --- MAIN DASHBOARD ---
 conn = get_connection()
 df = pd.read_sql_query(
     "SELECT * FROM multi_patient_logs WHERE patient_id = ? ORDER BY date ASC, entry_time ASC",
@@ -356,7 +358,7 @@ df = pd.read_sql_query(
 )
 conn.close()
 
-st.subheader(f"Recovery Dashboard: {active_profile['patient_name']} ({selected_patient_id})")
+st.subheader(f"Recovery Dashboard: {active_profile['patient_name']} (MRN: {selected_patient_id})")
 
 if df.empty:
     st.info("No logs recorded yet for this profile.")
@@ -385,7 +387,7 @@ else:
             elements = []
             styles = getSampleStyleSheet()
 
-            elements.append(Paragraph(f"<b>Post-Op Clinical Summary: {profile['patient_name']} ({profile['patient_id']})</b>", styles['Title']))
+            elements.append(Paragraph(f"<b>Post-Op Clinical Summary: {profile['patient_name']} (MRN: {profile['patient_id']})</b>", styles['Title']))
             elements.append(Paragraph(f"<b>Attending Neurosurgeon:</b> Dr. Ananda | <b>Procedure:</b> {profile['procedure_type']}", styles['Normal']))
             elements.append(Paragraph(f"<b>Affected Nerves:</b> {profile['affected_cranial_nerves']} | <b>Report Date:</b> {datetime.date.today()}", styles['Normal']))
             elements.append(Spacer(1, 10))
@@ -421,6 +423,6 @@ else:
             st.download_button(
                 label=f"📥 Download PDF for {active_profile['patient_name']}",
                 data=pdf_data,
-                file_name=f"Neuro_Report_{active_profile['patient_id']}_{datetime.date.today()}.pdf",
+                file_name=f"Neuro_Report_MRN_{active_profile['patient_id']}_{datetime.date.today()}.pdf",
                 mime="application/pdf"
             )
