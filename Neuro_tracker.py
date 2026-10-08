@@ -60,8 +60,12 @@ def init_db(reset=False):
     conn.commit()
     conn.close()
 
-# Force wipe previous multi-user database tables on startup
-init_db(reset=True)
+# Keep reset=False to preserve saved logs
+init_db(reset=False)
+
+# Initialize time in session state ONCE so it doesn't reset on every widget click
+if "logged_time" not in st.session_state:
+    st.session_state["logged_time"] = datetime.datetime.now().time()
 
 # App Header
 st.title("🧠 My Recovery Tracker")
@@ -71,7 +75,9 @@ st.sidebar.header("📝 New Entry")
 
 log_date = st.sidebar.date_input("Log Date", datetime.date.today())
 time_of_day = st.sidebar.selectbox("Session Slot", ["Morning (AM)", "Afternoon (PM)", "Evening / Night (PM)"])
-exact_time = st.sidebar.time_input("Time Taken", value=datetime.datetime.now().time())
+
+# Time input now binds stably to session_state
+exact_time = st.sidebar.time_input("Time Taken", key="logged_time")
 
 st.sidebar.subheader("🩺 Vitals")
 systolic = st.sidebar.number_input("Systolic BP (mmHg)", 80, 200, 120)
