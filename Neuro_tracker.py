@@ -1,5 +1,6 @@
 import datetime
 import io
+import hashlib
 import pandas as pd
 import streamlit as st
 import plotly.express as px
@@ -10,15 +11,19 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 
-# Streamlit Page Config
+# Page Config
 st.set_page_config(
-    page_title="Post-MVD Recovery Tracker",
+    page_title="Neuro-Tracker | Dr. Ananda's Practice",
     layout="wide",
     initial_sidebar_state="expanded",
     page_icon="🧠"
 )
 
-# Connect to Turso Cloud DB (or fallback to local sqlite for testing)
+# Helper function to hash passwords
+def hash_password(password):
+    return hashlib.sha256(str.encode(password)).hexdigest()
+
+# Connect to Turso Cloud DB (or local fallback)
 def get_connection():
     if "TURSO_URL" in st.secrets:
         return libsql.connect(
@@ -35,9 +40,33 @@ def init_db():
     if hasattr(conn, 'sync'):
         conn.sync()
     c = conn.cursor()
-    # CN V & CN VIII specialised schema
+    
+    # 1. Users Table (Authentication & Access Control)
     c.execute('''
-        CREATE TABLE IF NOT EXISTS daily_logs_cn_v_viii (
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT,
+            role TEXT, -- 'doctor' or 'patient'
+            patient_id TEXT
+        )
+    ''')
+
+    # 2. Patient Profiles Table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS patient_profiles (
+            patient_id TEXT PRIMARY KEY,
+            patient_name TEXT,
+            diagnosis TEXT,
+            procedure_type TEXT,
+            affected_cranial_nerves TEXT,
+            created_date TEXT
+        )
+    ''')
+
+    # 3. Daily Logs Table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS multi_patient_logs (
+            patient_id TEXT,
             date TEXT,
             time_of_day TEXT,
             entry_time TEXT,
@@ -49,6 +78,7 @@ def init_db():
             hardware_sensitivity INTEGER,
             trigeminal_pain INTEGER,
             facial_numbness INTEGER,
+            facial_weakness INTEGER,
             jaw_stiffness INTEGER,
             snhl_hearing_clarity INTEGER,
             ear_fullness INTEGER,
@@ -58,201 +88,253 @@ def init_db():
             auditory_noises TEXT,
             positional_palpitations INTEGER,
             eye_dryness INTEGER,
+            csf_fluid_drip INTEGER,
             notes TEXT,
-            PRIMARY KEY (date, time_of_day)
+            PRIMARY KEY (patient_id, date, time_of_day)
         )
     ''')
+    
+    # Default initial accounts if database is new
+    c.execute("SELECT COUNT(*) FROM users")
+    if c.fetchone()[0] == 0:
+        # Create Doctor account (Default Pass: doc123)
+        c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", ("drananda", hash_password("doc123"), "doctor", "ALL"))
+        
+        # Create Linda's Profile & Account (Default Pass: linda123)
+        c.execute("INSERT INTO patient_profiles VALUES ('P001', 'Linda Marcia Thomas', 'Trigeminal Neuralgia & SNHL', 'Right Retrosigmoid Craniotomy / MVD', 'CN V, CN VIII', '2026-10-08')")
+        c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", ("linda", hash_password("linda123"), "patient", "P001"))
+
     conn.commit()
     conn.close()
 
 init_db()
 
-st.title("🧠 Post-MVD Recovery Tracker")
-st.caption("Patient Recovery Log for Dr. Ananda | Right Retrosigmoid Craniotomy / MVD (CN V & CN VIII)")
+# --- AUTHENTICATION STATE ---
+if 'authenticated' not in st.session_state:
+    st.session_state['authenticated'] = False
+    st.session_state['user_role'] = None
+    st.session_state['assigned_patient_id'] = None
+    st.session_state['username'] = None
 
-# Sidebar - Multi-Daily Entry Form
-st.sidebar.header("📝 Daily Log Entry (3x Daily)")
+# --- LOGIN FORM ---
+if not st.session_state['authenticated']:
+    st.title("🧠 Neuro-Tracker Portal Login")
+    
+    with st.form("login_form"):
+        username = st.text_input("Username").strip().lower()
+        password = st.text_input("Password", type="password")
+        submit = st.form_submit_button("Login", type="primary")
+        
+        if submit:
+            conn = get_connection()
+            c = conn.cursor()
+            c.execute("SELECT password_hash, role, patient_id FROM users WHERE username = ?", (username,))
+            user = c.fetchone()
+            conn.close()
+            
+            if user and user[0] == hash_password(password):
+                st.session_state['authenticated'] = True
+                st.session_state['username'] = username
+                st.session_state['user_role'] = user[1]
+                st.session_state['assigned_patient_id'] = user[2]
+                st.success(f"Welcome, {username.title()}!")
+                st.rerun()
+            else:
+                st.error("Invalid Username or Password.")
+    st.stop()
+
+# --- MAIN APP FOR LOGGED-IN USERS ---
+
+# Sidebar Logout Button
+st.sidebar.write(f"Logged in as: **{st.session_state['username']}** ({st.session_state['user_role'].title()})")
+if st.sidebar.button("Logout"):
+    st.session_state['authenticated'] = False
+    st.rerun()
+
+st.title("🧠 Neuro-Tracker Platform")
+
+# Fetch Profiles based on Role
+conn = get_connection()
+
+if st.session_state['user_role'] == 'doctor':
+    # Doctor sees all patients
+    profiles_df = pd.read_sql_query("SELECT * FROM patient_profiles", conn)
+    selected_patient_id = st.sidebar.selectbox(
+        "👤 Select Patient Profile",
+        options=profiles_df['patient_id'].tolist(),
+        format_func=lambda pid: f"{pid} - {profiles_df[profiles_df['patient_id'] == pid]['patient_name'].values[0]}"
+    )
+else:
+    # Patient sees ONLY their own profile
+    profiles_df = pd.read_sql_query(
+        "SELECT * FROM patient_profiles WHERE patient_id = ?", 
+        conn, params=(st.session_state['assigned_patient_id'],)
+    )
+    selected_patient_id = st.session_state['assigned_patient_id']
+
+conn.close()
+
+active_profile = profiles_df[profiles_df['patient_id'] == selected_patient_id].iloc[0]
+st.sidebar.info(f"**Patient:** {active_profile['patient_name']}\n\n**Procedure:** {active_profile['procedure_type']}\n\n**Nerves:** {active_profile['affected_cranial_nerves']}")
+
+# Doctor-Only: Register New Patient / User
+if st.session_state['user_role'] == 'doctor':
+    with st.sidebar.expander("➕ Register New Patient"):
+        new_id = st.text_input("Patient ID (e.g., P002)")
+        new_name = st.text_input("Full Name")
+        new_username = st.text_input("Login Username")
+        new_pass = st.text_input("Initial Password", type="password")
+        new_diag = st.text_input("Diagnosis")
+        new_proc = st.text_input("Procedure")
+        new_nerves = st.multiselect("Affected Cranial Nerves", ["CN V (Trigeminal)", "CN VII (Facial)", "CN VIII (Vestibulocochlear)", "CN IX/X"])
+        
+        if st.button("Create Account & Profile"):
+            if new_id and new_name and new_username and new_pass:
+                conn = get_connection()
+                c = conn.cursor()
+                # Insert Profile
+                c.execute("INSERT INTO patient_profiles VALUES (?, ?, ?, ?, ?, ?)", (
+                    new_id, new_name, new_diag, new_proc, ", ".join(new_nerves), str(datetime.date.today())
+                ))
+                # Insert Patient User Account
+                c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (
+                    new_username.lower(), hash_password(new_pass), "patient", new_id
+                ))
+                conn.commit()
+                if hasattr(conn, 'sync'):
+                    conn.sync()
+                conn.close()
+                st.success(f"Registered patient {new_name}!")
+                st.rerun()
+
+# --- DAILY LOG ENTRY FORM ---
+st.sidebar.header(f"📝 Log Entry for {active_profile['patient_name']}")
 
 log_date = st.sidebar.date_input("Log Date", datetime.date.today())
-
-# Time Slot Selector
-time_of_day = st.sidebar.selectbox(
-    "Time Slot / Session",
-    ["Morning (AM)", "Afternoon (PM)", "Evening / Night (PM)"]
-)
-
-exact_time = st.sidebar.time_input("Exact Time Taken", datetime.datetime.now().time())
+time_of_day = st.sidebar.selectbox("Session Slot", ["Morning (AM)", "Afternoon (PM)", "Evening / Night (PM)"])
+exact_time = st.sidebar.time_input("Time Taken", datetime.datetime.now().time())
 
 st.sidebar.subheader("🩺 Vitals")
 systolic = st.sidebar.number_input("Systolic BP (mmHg)", 80, 200, 120)
 diastolic = st.sidebar.number_input("Diastolic BP (mmHg)", 50, 130, 80)
-pulse = st.sidebar.number_input("Pulse Rate (bpm)", 40, 180, 72)
-temperature = st.sidebar.number_input("Body Temp (°C)", 35.0, 41.0, 36.8, step=0.1)
+pulse = st.sidebar.number_input("Pulse (bpm)", 40, 180, 72)
+temperature = st.sidebar.number_input("Temp (°C)", 35.0, 41.0, 36.8, step=0.1)
 
-st.sidebar.subheader("🧠 CN V (Trigeminal Nerve) Symptoms")
-trigeminal_pain = st.sidebar.slider("Trigeminal Pain / Electric Zaps (0-10)", 0, 10, 0)
-facial_numbness = st.sidebar.slider("Facial Numbness / Tingling (0-10)", 0, 10, 0)
-jaw_stiffness = st.sidebar.slider("Jaw Stiffness / Chewing Discomfort (0-10)", 0, 10, 0)
-eye_dryness = st.sidebar.checkbox("Surgical-Side Eye Dryness / Reduced Blink")
+# Dynamic Symptoms Based on Patient Profile
+trigeminal_pain, facial_numbness, jaw_stiffness, eye_dryness = 0, 0, 0, 0
+facial_weakness = 0
+snhl_hearing_clarity, ear_fullness, dizziness_vertigo = 0, 0, 0
+auditory_noises = []
 
-st.sidebar.subheader("👂 CN VIII (Vestibulocochlear) & Ear Symptoms")
-snhl_hearing_clarity = st.sidebar.slider("SNHL Hearing Muffledness (0=Normal, 10=Very Muffled)", 0, 10, 0)
-ear_fullness = st.sidebar.slider("Ear Fullness / Pressure (0-10)", 0, 10, 0)
-dizziness_vertigo = st.sidebar.slider("Dizziness / Vertigo / Imbalance (0-10)", 0, 10, 0)
+if "CN V" in active_profile['affected_cranial_nerves']:
+    st.sidebar.markdown("**CN V Indicators:**")
+    trigeminal_pain = st.sidebar.slider("Trigeminal Pain / Zaps (0-10)", 0, 10, 0)
+    facial_numbness = st.sidebar.slider("Facial Numbness (0-10)", 0, 10, 0)
+    jaw_stiffness = st.sidebar.slider("Jaw Stiffness (0-10)", 0, 10, 0)
+    eye_dryness = 1 if st.sidebar.checkbox("Surgical-Side Eye Dryness") else 0
 
-auditory_noises = st.sidebar.multiselect(
-    "Auditory Tinnitus & Positional Noises",
-    [
-        "None",
-        "Whooshing Sound (when lying flat)",
-        "Straight Humming / Wind Blowing (non-pulsating)",
-        "Washing Machine Sound",
-        "High-Pitch Ringing / Hissing",
-        "Hyperacusis (Loud Sound Sensitivity)"
-    ]
-)
+if "CN VII" in active_profile['affected_cranial_nerves']:
+    st.sidebar.markdown("**CN VII Indicators:**")
+    facial_weakness = st.sidebar.slider("Facial Weakness (0-10)", 0, 10, 0)
 
-st.sidebar.subheader("🤕 Surgical Site & General Recovery")
+if "CN VIII" in active_profile['affected_cranial_nerves']:
+    st.sidebar.markdown("**CN VIII Indicators:**")
+    snhl_hearing_clarity = st.sidebar.slider("Hearing Muffledness (0-10)", 0, 10, 0)
+    ear_fullness = st.sidebar.slider("Ear Pressure (0-10)", 0, 10, 0)
+    dizziness_vertigo = st.sidebar.slider("Dizziness / Vertigo (0-10)", 0, 10, 0)
+    auditory_noises = st.sidebar.multiselect(
+        "Tinnitus Symptoms",
+        ["None", "Whooshing Sound (lying flat)", "Straight Humming / Wind Blowing", "Washing Machine Sound", "High-Pitch Ringing", "Hyperacusis"]
+    )
+
+st.sidebar.subheader("🤕 Post-Op & Surgical Site")
 incision_pain = st.sidebar.slider("Incision Pain (0-10)", 0, 10, 0)
-hardware_sens = st.sidebar.slider("Hardware/Screw Sensitivity (0-10)", 0, 10, 0)
-heat_weakness = st.sidebar.slider("Heat Flare-up / Muscle Weakness (0-10)", 0, 10, 0)
-hand_clumsy = st.sidebar.slider("Hand Clumsiness / Dropping Objects (0-10)", 0, 10, 0)
+hardware_sens = st.sidebar.slider("Hardware Sensitivity (0-10)", 0, 10, 0)
+heat_weakness = st.sidebar.slider("Heat Flare-up / Weakness (0-10)", 0, 10, 0)
+hand_clumsy = st.sidebar.slider("Hand Clumsiness (0-10)", 0, 10, 0)
 
-st.sidebar.subheader("🫀 Autonomic & Positional Triggers")
-positional_palpitations = st.sidebar.checkbox("Chest 'Dubdub' / Palpitations when Lying Flat")
-notes = st.sidebar.text_area("Additional Notes / Specific Triggers")
+positional_palpitations = 1 if st.sidebar.checkbox("Chest Palpitations when Flat") else 0
+csf_fluid_drip = 1 if st.sidebar.checkbox("Clear Fluid Drip (Nose/Ear)") else 0
+notes = st.sidebar.text_area("Notes / Triggers")
 
-if st.sidebar.button("Save Entry", type="primary"):
+if st.sidebar.button("Save Daily Log", type="primary"):
     conn = get_connection()
     c = conn.cursor()
     c.execute('''
-        INSERT INTO daily_logs_cn_v_viii VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(date, time_of_day) DO UPDATE SET
-            entry_time=excluded.entry_time,
-            systolic=excluded.systolic,
-            diastolic=excluded.diastolic,
-            pulse=excluded.pulse,
-            temperature=excluded.temperature,
-            incision_pain=excluded.incision_pain,
-            hardware_sensitivity=excluded.hardware_sensitivity,
-            trigeminal_pain=excluded.trigeminal_pain,
-            facial_numbness=excluded.facial_numbness,
-            jaw_stiffness=excluded.jaw_stiffness,
-            snhl_hearing_clarity=excluded.snhl_hearing_clarity,
-            ear_fullness=excluded.ear_fullness,
-            dizziness_vertigo=excluded.dizziness_vertigo,
-            heat_weakness_flare=excluded.heat_weakness_flare,
-            hand_clumsiness=excluded.hand_clumsiness,
-            auditory_noises=excluded.auditory_noises,
-            positional_palpitations=excluded.positional_palpitations,
-            eye_dryness=excluded.eye_dryness,
-            notes=excluded.notes
+        INSERT INTO multi_patient_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(patient_id, date, time_of_day) DO UPDATE SET
+            entry_time=excluded.entry_time, systolic=excluded.systolic, diastolic=excluded.diastolic,
+            pulse=excluded.pulse, temperature=excluded.temperature, incision_pain=excluded.incision_pain,
+            hardware_sensitivity=excluded.hardware_sensitivity, trigeminal_pain=excluded.trigeminal_pain,
+            facial_numbness=excluded.facial_numbness, facial_weakness=excluded.facial_weakness,
+            jaw_stiffness=excluded.jaw_stiffness, snhl_hearing_clarity=excluded.snhl_hearing_clarity,
+            ear_fullness=excluded.ear_fullness, dizziness_vertigo=excluded.dizziness_vertigo,
+            heat_weakness_flare=excluded.heat_weakness_flare, hand_clumsiness=excluded.hand_clumsiness,
+            auditory_noises=excluded.auditory_noises, positional_palpitations=excluded.positional_palpitations,
+            eye_dryness=excluded.eye_dryness, csf_fluid_drip=excluded.csf_fluid_drip, notes=excluded.notes
     ''', (
-        str(log_date), time_of_day, str(exact_time), systolic, diastolic, pulse, temperature,
-        incision_pain, hardware_sens, trigeminal_pain, facial_numbness, jaw_stiffness,
+        selected_patient_id, str(log_date), time_of_day, str(exact_time), systolic, diastolic, pulse, temperature,
+        incision_pain, hardware_sens, trigeminal_pain, facial_numbness, facial_weakness, jaw_stiffness,
         snhl_hearing_clarity, ear_fullness, dizziness_vertigo, heat_weakness, hand_clumsy,
-        ", ".join(auditory_noises), 1 if positional_palpitations else 0, 1 if eye_dryness else 0, notes
+        ", ".join(auditory_noises), positional_palpitations, eye_dryness, csf_fluid_drip, notes
     ))
     conn.commit()
     if hasattr(conn, 'sync'):
         conn.sync()
     conn.close()
-    st.sidebar.success(f"Saved {time_of_day} entry for {log_date} ({exact_time.strftime('%I:%M %p')})")
+    st.sidebar.success(f"Saved {time_of_day} entry!")
 
-# Main Dashboard
+# --- DASHBOARD (RESTRICTED TO SELECTED PATIENT) ---
 conn = get_connection()
-df = pd.read_sql_query("SELECT * FROM daily_logs_cn_v_viii ORDER BY date ASC, entry_time ASC", conn)
+df = pd.read_sql_query(
+    "SELECT * FROM multi_patient_logs WHERE patient_id = ? ORDER BY date ASC, entry_time ASC",
+    conn, params=(selected_patient_id,)
+)
 conn.close()
 
+st.subheader(f"Recovery Dashboard: {active_profile['patient_name']} ({selected_patient_id})")
+
 if df.empty:
-    st.info("No logs recorded yet. Use the sidebar menu to enter your first 3x daily reading.")
+    st.info("No logs recorded yet for this profile.")
 else:
     df['date_time_label'] = df['date'] + " (" + df['time_of_day'] + ")"
-
-    tab1, tab2, tab3 = st.tabs(["📊 Analytics & Trends", "📋 Raw Data", "📄 PDF Export for Dr. Ananda"])
+    tab1, tab2, tab3 = st.tabs(["📊 Analytics", "📋 Raw Data", "📄 PDF Clinical Report"])
 
     with tab1:
-        df['whooshing_lying_flat'] = df['auditory_noises'].fillna('').apply(
-            lambda x: 1 if "Whooshing Sound (when lying flat)" in x else 0
-        )
-
-        st.subheader("Latest Session Summary")
         col1, col2, col3, col4 = st.columns(4)
         latest = df.iloc[-1]
-        col1.metric("Blood Pressure", f"{latest['systolic']}/{latest['diastolic']} mmHg", delta=latest['time_of_day'], delta_color="off")
+        col1.metric("BP", f"{latest['systolic']}/{latest['diastolic']} mmHg")
         col2.metric("Pulse", f"{latest['pulse']} bpm")
         col3.metric("CN V Zap Pain", f"{latest['trigeminal_pain']}/10")
-        col4.metric("CN VIII Muffledness", f"{latest['snhl_hearing_clarity']}/10")
+        col4.metric("Hearing Muffledness", f"{latest['snhl_hearing_clarity']}/10")
 
-        st.subheader("📈 Blood Pressure & Pulse Trends (3x Daily)")
-        fig_vitals = px.line(df, x="date_time_label", y=["systolic", "diastolic", "pulse"],
-                             title="Vitals Across Daily Sessions", markers=True)
-        fig_vitals.update_xaxes(title="Date & Session")
-        st.plotly_chart(fig_vitals, use_container_width=True)
-
-        st.subheader("🧠 CN V (Trigeminal) vs. CN VIII (Vestibulocochlear) Recovery")
-        fig_cn = px.line(
-            df, x="date_time_label",
-            y=["trigeminal_pain", "facial_numbness", "snhl_hearing_clarity", "ear_fullness", "dizziness_vertigo"],
-            title="Cranial Nerve Symptom Severity Over Time", markers=True
-        )
-        fig_cn.update_xaxes(title="Date & Session")
-        st.plotly_chart(fig_cn, use_container_width=True)
-
-        st.subheader("🛌 Positional Symptoms (Lying Flat)")
-        fig_positional = go.Figure()
-        fig_positional.add_trace(go.Bar(
-            x=df['date_time_label'], y=df['whooshing_lying_flat'],
-            name="Whooshing Sound (Lying Flat)", marker_color="#8B5CF6"
-        ))
-        fig_positional.add_trace(go.Bar(
-            x=df['date_time_label'], y=df['positional_palpitations'],
-            name="Chest 'Dubdub' / Palpitations", marker_color="#EF4444"
-        ))
-        fig_positional.update_layout(
-            barmode='group',
-            title="Positional Auditory & Cardiac Symptoms by Session",
-            xaxis_title="Date & Session",
-            yaxis=dict(title="Occurrence", tickvals=[0, 1], ticktext=["Absent", "Present"])
-        )
-        st.plotly_chart(fig_positional, use_container_width=True)
+        st.plotly_chart(px.line(df, x="date_time_label", y=["systolic", "diastolic", "pulse"], title="Vitals Trend", markers=True), use_container_width=True)
+        st.plotly_chart(px.line(df, x="date_time_label", y=["trigeminal_pain", "facial_numbness", "snhl_hearing_clarity", "ear_fullness", "dizziness_vertigo"], title="Cranial Nerve Trends", markers=True), use_container_width=True)
 
     with tab2:
         st.dataframe(df, use_container_width=True)
 
     with tab3:
-        st.subheader("Generate Clinical Summary PDF")
-
-        def generate_pdf(dataframe):
+        def generate_pdf(dataframe, profile):
             buffer = io.BytesIO()
             doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=15, leftMargin=15, topMargin=20, bottomMargin=20)
             elements = []
             styles = getSampleStyleSheet()
 
-            elements.append(Paragraph("<b>Post-MVD Recovery Log (CN V & CN VIII Focus)</b>", styles['Title']))
-            elements.append(Paragraph("<b>Attending Neurosurgeon:</b> Dr. Ananda", styles['Normal']))
-            elements.append(Paragraph(f"<b>Report Generated:</b> {datetime.date.today()}", styles['Normal']))
+            elements.append(Paragraph(f"<b>Post-Op Clinical Summary: {profile['patient_name']} ({profile['patient_id']})</b>", styles['Title']))
+            elements.append(Paragraph(f"<b>Attending Neurosurgeon:</b> Dr. Ananda | <b>Procedure:</b> {profile['procedure_type']}", styles['Normal']))
+            elements.append(Paragraph(f"<b>Affected Nerves:</b> {profile['affected_cranial_nerves']} | <b>Report Date:</b> {datetime.date.today()}", styles['Normal']))
             elements.append(Spacer(1, 10))
 
-            headers = ["Date", "Session", "BP", "Pulse", "CN V Zaps", "Facial Numb", "SNHL Muffled", "Ear Full", "Dizzy", "Auditory / Positional"]
+            headers = ["Date", "Session", "BP", "Pulse", "CN V", "Numbness", "CN VIII", "Ear Fullness", "Dizziness", "Auditory/Notes"]
             table_data = [headers]
 
             for _, row in dataframe.iterrows():
-                notes_summary = str(row['auditory_noises']) if row['auditory_noises'] else "None"
-                if row['positional_palpitations'] == 1:
-                    notes_summary += " | Chest Dubdub"
-
                 table_data.append([
-                    str(row['date']),
-                    str(row['time_of_day']),
-                    f"{row['systolic']}/{row['diastolic']}",
-                    str(row['pulse']),
-                    f"{row['trigeminal_pain']}/10",
-                    f"{row['facial_numbness']}/10",
-                    f"{row['snhl_hearing_clarity']}/10",
-                    f"{row['ear_fullness']}/10",
-                    f"{row['dizziness_vertigo']}/10",
-                    Paragraph(notes_summary, styles['Normal'])
+                    str(row['date']), str(row['time_of_day']), f"{row['systolic']}/{row['diastolic']}",
+                    str(row['pulse']), f"{row['trigeminal_pain']}/10", f"{row['facial_numbness']}/10",
+                    f"{row['snhl_hearing_clarity']}/10", f"{row['ear_fullness']}/10", f"{row['dizziness_vertigo']}/10",
+                    Paragraph(str(row['auditory_noises']) if row['auditory_noises'] else "None", styles['Normal'])
                 ])
 
             t = Table(table_data, colWidths=[55, 60, 45, 35, 45, 50, 55, 45, 40, 110])
@@ -262,7 +344,6 @@ else:
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 6.5),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 4),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
                 ('FONTSIZE', (0, 1), (-1, -1), 6),
             ]))
@@ -271,11 +352,11 @@ else:
             buffer.seek(0)
             return buffer
 
-        if st.button("Build PDF Report"):
-            pdf_data = generate_pdf(df)
+        if st.button("Build Patient PDF Report"):
+            pdf_data = generate_pdf(df, active_profile)
             st.download_button(
-                label="📥 Download PDF for Dr. Ananda",
+                label=f"📥 Download PDF for {active_profile['patient_name']}",
                 data=pdf_data,
-                file_name=f"MVD_Recovery_Report_CN_V_VIII_{datetime.date.today()}.pdf",
+                file_name=f"Neuro_Report_{active_profile['patient_id']}_{datetime.date.today()}.pdf",
                 mime="application/pdf"
             )
