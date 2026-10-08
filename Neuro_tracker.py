@@ -11,7 +11,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 
-# Page Config
+# Streamlit Page Config
 st.set_page_config(
     page_title="Neuro-Tracker | Dr. Ananda's Practice",
     layout="wide",
@@ -19,11 +19,11 @@ st.set_page_config(
     page_icon="🧠"
 )
 
-# Password hashing
+# Helper function to hash passwords
 def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
-# Database Connection
+# Connect to Turso Cloud DB (or local fallback for testing)
 def get_connection():
     if "TURSO_URL" in st.secrets:
         return libsql.connect(
@@ -41,7 +41,7 @@ def init_db():
         conn.sync()
     c = conn.cursor()
     
-    # 1. Users Table
+    # 1. Users Table (Authentication & Access Control)
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
@@ -94,10 +94,13 @@ def init_db():
         )
     ''')
     
-    # Default initial accounts
+    # Pre-populate default accounts on initial launch
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
+        # Create Doctor account (Default Pass: doc123)
         c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", ("drananda", hash_password("doc123"), "doctor", "ALL"))
+        
+        # Create Linda's Profile & Account (Default Pass: linda123)
         c.execute("INSERT INTO patient_profiles VALUES ('P001', 'Linda Marcia Thomas', 'Trigeminal Neuralgia & SNHL', 'Right Retrosigmoid Craniotomy / MVD', 'CN V, CN VIII', '2026-10-08')")
         c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", ("linda", hash_password("linda123"), "patient", "P001"))
 
@@ -106,12 +109,16 @@ def init_db():
 
 init_db()
 
-# --- AUTHENTICATION STATE ---
+# --- AUTHENTICATION SESSION STATE ---
 if 'authenticated' not in st.session_state:
     st.session_state['authenticated'] = False
     st.session_state['user_role'] = None
     st.session_state['assigned_patient_id'] = None
     st.session_state['username'] = None
+
+# Preserve initial clock time for the entry form session
+if 'default_log_time' not in st.session_state:
+    st.session_state['default_log_time'] = datetime.datetime.now().time()
 
 # --- LOGIN FORM ---
 if not st.session_state['authenticated']:
@@ -140,7 +147,7 @@ if not st.session_state['authenticated']:
                 st.error("Invalid Username or Password.")
     st.stop()
 
-# --- LOGGED IN APPLICATION ---
+# --- LOGGED-IN APPLICATION INTERFACE ---
 
 st.sidebar.write(f"Logged in: **{st.session_state['username']}** ({st.session_state['user_role'].title()})")
 if st.sidebar.button("Logout"):
@@ -153,6 +160,7 @@ st.title("🧠 Neuro-Tracker Platform")
 conn = get_connection()
 
 if st.session_state['user_role'] == 'doctor':
+    # Doctor can select any patient profile
     profiles_df = pd.read_sql_query("SELECT * FROM patient_profiles", conn)
     selected_patient_id = st.sidebar.selectbox(
         "👤 Select Patient Profile",
@@ -160,6 +168,7 @@ if st.session_state['user_role'] == 'doctor':
         format_func=lambda pid: f"{pid} - {profiles_df[profiles_df['patient_id'] == pid]['patient_name'].values[0]}"
     )
 else:
+    # Patient sees ONLY their own profile
     profiles_df = pd.read_sql_query(
         "SELECT * FROM patient_profiles WHERE patient_id = ?", 
         conn, params=(st.session_state['assigned_patient_id'],)
@@ -226,7 +235,7 @@ if st.session_state['user_role'] == 'doctor':
                 conn.close()
                 st.success(f"Password reset successfully for {target_user}!")
 
-# --- SELF-SERVICE: CHANGE MY PASSWORD (AVAILABLE TO ALL USERS) ---
+# --- SELF-SERVICE: CHANGE MY PASSWORD (AVAILABLE TO ALL) ---
 with st.sidebar.expander("🔑 Change My Password"):
     with st.form("change_my_password_form"):
         curr_pass = st.text_input("Current Password", type="password")
@@ -261,7 +270,13 @@ st.sidebar.header(f"📝 Log Entry for {active_profile['patient_name']}")
 
 log_date = st.sidebar.date_input("Log Date", datetime.date.today())
 time_of_day = st.sidebar.selectbox("Session Slot", ["Morning (AM)", "Afternoon (PM)", "Evening / Night (PM)"])
-exact_time = st.sidebar.time_input("Time Taken", datetime.datetime.now().time())
+
+# State-locked time input (prevents auto-reset when sliders move)
+exact_time = st.sidebar.time_input(
+    "Time Taken", 
+    value=st.session_state['default_log_time'], 
+    key="log_exact_time"
+)
 
 st.sidebar.subheader("🩺 Vitals")
 systolic = st.sidebar.number_input("Systolic BP (mmHg)", 80, 200, 120)
@@ -269,7 +284,7 @@ diastolic = st.sidebar.number_input("Diastolic BP (mmHg)", 50, 130, 80)
 pulse = st.sidebar.number_input("Pulse (bpm)", 40, 180, 72)
 temperature = st.sidebar.number_input("Temp (°C)", 35.0, 41.0, 36.8, step=0.1)
 
-# Dynamic Symptoms
+# Dynamic Symptom Checkers
 trigeminal_pain, facial_numbness, jaw_stiffness, eye_dryness = 0, 0, 0, 0
 facial_weakness = 0
 snhl_hearing_clarity, ear_fullness, dizziness_vertigo = 0, 0, 0
@@ -333,7 +348,7 @@ if st.sidebar.button("Save Daily Log", type="primary"):
     conn.close()
     st.sidebar.success(f"Saved {time_of_day} entry!")
 
-# --- MAIN DASHBOARD ---
+# --- MAIN DASHBOARD AREA ---
 conn = get_connection()
 df = pd.read_sql_query(
     "SELECT * FROM multi_patient_logs WHERE patient_id = ? ORDER BY date ASC, entry_time ASC",
