@@ -14,11 +14,11 @@ from reportlab.lib import colors
 st.set_page_config(
     page_title="Post-MVD Recovery Tracker",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
     page_icon="🧠"
 )
 
-# Connect to Turso Cloud DB (or fallback to local sqlite for offline testing)
+# Connect to Turso Cloud DB (or fallback to local sqlite for testing)
 def get_connection():
     if "TURSO_URL" in st.secrets:
         return libsql.connect(
@@ -35,9 +35,12 @@ def init_db():
     if hasattr(conn, 'sync'):
         conn.sync()
     c = conn.cursor()
+    # Updated primary key to composite (date, time_of_day) for 3x daily tracking
     c.execute('''
-        CREATE TABLE IF NOT EXISTS daily_logs (
-            date TEXT PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS daily_logs_v2 (
+            date TEXT,
+            time_of_day TEXT,
+            entry_time TEXT,
             systolic INTEGER,
             diastolic INTEGER,
             pulse INTEGER,
@@ -49,7 +52,8 @@ def init_db():
             right_ear_pain INTEGER,
             auditory_noises TEXT,
             positional_palpitations INTEGER,
-            notes TEXT
+            notes TEXT,
+            PRIMARY KEY (date, time_of_day)
         )
     ''')
     conn.commit()
@@ -60,10 +64,21 @@ init_db()
 st.title("🧠 Post-MVD Recovery Tracker")
 st.caption("Patient Recovery Log for Dr. Ananda | Right Retrosigmoid Craniotomy / MVD")
 
-# Sidebar - Daily Data Entry
-st.sidebar.header("📝 Daily Log Entry")
+# Sidebar - Multi-Daily Entry Form
+st.sidebar.header("📝 Daily Log Entry (3x Daily)")
 
 log_date = st.sidebar.date_input("Log Date", datetime.date.today())
+
+# Time Slot Selector
+time_of_day = st.sidebar.selectbox(
+    "Time Slot / Session",
+    ["Morning (AM)", "Afternoon (PM)", "Evening / Night (PM)"]
+)
+
+# Exact Time Recording
+exact_time = st.sidebar.time_input("Exact Time Taken", datetime.datetime.now().time())
+
+st.sidebar.subheader("Vitals")
 systolic = st.sidebar.number_input("Systolic BP (mmHg)", 80, 200, 120)
 diastolic = st.sidebar.number_input("Diastolic BP (mmHg)", 50, 130, 80)
 pulse = st.sidebar.number_input("Pulse Rate (bpm)", 40, 180, 72)
@@ -92,12 +107,13 @@ auditory_noises = st.sidebar.multiselect(
 positional_palpitations = st.sidebar.checkbox("Sudden Chest 'Dubdub' / Palpitations when Lying Flat")
 notes = st.sidebar.text_area("Additional Notes / Specific Triggers")
 
-if st.sidebar.button("Save Daily Log", type="primary"):
+if st.sidebar.button("Save Entry", type="primary"):
     conn = get_connection()
     c = conn.cursor()
     c.execute('''
-        INSERT INTO daily_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(date) DO UPDATE SET
+        INSERT INTO daily_logs_v2 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(date, time_of_day) DO UPDATE SET
+            entry_time=excluded.entry_time,
             systolic=excluded.systolic,
             diastolic=excluded.diastolic,
             pulse=excluded.pulse,
@@ -111,7 +127,7 @@ if st.sidebar.button("Save Daily Log", type="primary"):
             positional_palpitations=excluded.positional_palpitations,
             notes=excluded.notes
     ''', (
-        str(log_date), systolic, diastolic, pulse, temperature,
+        str(log_date), time_of_day, str(exact_time), systolic, diastolic, pulse, temperature,
         incision_pain, hardware_sens, heat_weakness, hand_clumsy,
         right_ear_pain, ", ".join(auditory_noises), 1 if positional_palpitations else 0, notes
     ))
@@ -119,16 +135,19 @@ if st.sidebar.button("Save Daily Log", type="primary"):
     if hasattr(conn, 'sync'):
         conn.sync()
     conn.close()
-    st.sidebar.success(f"Saved entry for {log_date}")
+    st.sidebar.success(f"Saved {time_of_day} entry for {log_date} ({exact_time.strftime('%I:%M %p')})")
 
 # Main Dashboard
 conn = get_connection()
-df = pd.read_sql_query("SELECT * FROM daily_logs ORDER BY date ASC", conn)
+df = pd.read_sql_query("SELECT * FROM daily_logs_v2 ORDER BY date ASC, entry_time ASC", conn)
 conn.close()
 
 if df.empty:
-    st.info("No logs recorded yet. Use the sidebar menu to enter your first day's vitals and symptoms.")
+    st.info("No logs recorded yet. Use the sidebar menu to enter your first reading.")
 else:
+    # Combine Date & Time of Day for display
+    df['date_time_label'] = df['date'] + " (" + df['time_of_day'] + ")"
+
     tab1, tab2, tab3 = st.tabs(["📊 Analytics & Trends", "📋 Raw Data", "📄 PDF Export for Dr. Ananda"])
 
     with tab1:
@@ -139,60 +158,55 @@ else:
             lambda x: 1 if "Straight Humming / Wind Blowing Sound (non-pulsating)" in x else 0
         )
 
-        st.subheader("Vitals Overview")
+        st.subheader("Latest Reading Overview")
         col1, col2, col3, col4 = st.columns(4)
         latest = df.iloc[-1]
-        col1.metric("Latest Blood Pressure", f"{latest['systolic']}/{latest['diastolic']} mmHg")
+        col1.metric("Latest Blood Pressure", f"{latest['systolic']}/{latest['diastolic']} mmHg", delta=latest['time_of_day'], delta_color="off")
         col2.metric("Latest Pulse", f"{latest['pulse']} bpm")
         col3.metric("Latest Temperature", f"{latest['temperature']} °C")
         
         total_whooshing = df['whooshing_lying_flat'].sum()
         total_palpitations = df['positional_palpitations'].sum()
-        total_days = len(df)
         col4.metric(
-            "Positional Symptoms",
-            f"{total_whooshing + total_palpitations} Days Total",
-            delta=f"Whooshing: {total_whooshing}/{total_days}d | Dubdub: {total_palpitations}/{total_days}d",
+            "Positional Symptoms Recorded",
+            f"{total_whooshing + total_palpitations} Sessions",
+            delta=f"Whooshing: {total_whooshing} | Dubdub: {total_palpitations}",
             delta_color="off"
         )
 
-        st.subheader("🛌 Positional Symptoms Tracker (Lying Flat)")
+        st.subheader("📈 Blood Pressure & Pulse Trends (3x Daily)")
+        fig_vitals = px.line(df, x="date_time_label", y=["systolic", "diastolic", "pulse"],
+                             title="Blood Pressure & Pulse Across Daily Sessions",
+                             markers=True)
+        fig_vitals.update_xaxes(title="Date & Session")
+        st.plotly_chart(fig_vitals, use_container_width=True)
+
+        st.subheader("🛌 Positional Symptoms (Lying Flat)")
         fig_positional = go.Figure()
         
         fig_positional.add_trace(go.Bar(
-            x=df['date'], y=df['whooshing_lying_flat'],
+            x=df['date_time_label'], y=df['whooshing_lying_flat'],
             name="Whooshing Sound (Lying Flat)", marker_color="#8B5CF6"
         ))
         fig_positional.add_trace(go.Bar(
-            x=df['date'], y=df['positional_palpitations'],
-            name="Chest 'Dubdub' / Palpitations (Lying Flat)", marker_color="#EF4444"
-        ))
-        fig_positional.add_trace(go.Bar(
-            x=df['date'], y=df['humming_wind'],
-            name="Wind Humming Sound", marker_color="#06B6D4"
+            x=df['date_time_label'], y=df['positional_palpitations'],
+            name="Chest 'Dubdub' / Palpitations", marker_color="#EF4444"
         ))
 
         fig_positional.update_layout(
             barmode='group',
-            title="Daily Occurrence of Positional Auditory & Cardiac Symptoms",
-            xaxis_title="Date",
+            title="Session-by-Session Positional Auditory & Cardiac Symptoms",
+            xaxis_title="Date & Session",
             yaxis=dict(title="Occurrence", tickvals=[0, 1], ticktext=["Absent", "Present"]),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
         st.plotly_chart(fig_positional, use_container_width=True)
 
-        fig_vitals = px.line(df, x="date", y=["systolic", "diastolic", "pulse"],
-                             title="Blood Pressure & Pulse Trends")
-        st.plotly_chart(fig_vitals, use_container_width=True)
-
-        fig_temp = px.line(df, x="date", y="temperature", title="Daily Body Temperature (°C)")
-        fig_temp.add_hline(y=38.0, line_dash="dash", line_color="red", annotation_text="Fever Threshold (38°C)")
-        st.plotly_chart(fig_temp, use_container_width=True)
-
-        st.subheader("Neurological & Incision Symptom Severity (0–10)")
+        st.subheader("Symptom Severity (0–10)")
         symptom_cols = ["incision_pain", "hardware_sensitivity", "heat_weakness_flare", "hand_clamsiness", "right_ear_pain"]
-        fig_symptoms = px.line(df, x="date", y=symptom_cols,
-                               title="Symptom Scores Over Time")
+        fig_symptoms = px.line(df, x="date_time_label", y=symptom_cols,
+                               title="Symptom Scores Across Daily Sessions", markers=True)
+        fig_symptoms.update_xaxes(title="Date & Session")
         st.plotly_chart(fig_symptoms, use_container_width=True)
 
     with tab2:
@@ -203,22 +217,28 @@ else:
 
         def generate_pdf(dataframe):
             buffer = io.BytesIO()
-            doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=20, leftMargin=20, topMargin=30, bottomMargin=30)
+            doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=15, leftMargin=15, topMargin=20, bottomMargin=20)
             elements = []
             styles = getSampleStyleSheet()
 
-            elements.append(Paragraph("<b>Post-MVD Recovery Summary (1-Month Log)</b>", styles['Title']))
+            elements.append(Paragraph("<b>Post-MVD Recovery Summary (3x Daily Vitals Log)</b>", styles['Title']))
             elements.append(Paragraph("<b>Patient:</b> Retrosigmoid Craniotomy / MVD Recovery Tracker", styles['Normal']))
             elements.append(Paragraph("<b>Attending Neurosurgeon:</b> Dr. Ananda", styles['Normal']))
             elements.append(Paragraph(f"<b>Report Generated:</b> {datetime.date.today()}", styles['Normal']))
             elements.append(Spacer(1, 10))
 
-            headers = ["Date", "BP", "Pulse", "Temp", "Incision", "Hardware", "Heat/Weak", "Hand Clums", "R Ear", "Auditory Noises", "Chest 'Dubdub'"]
+            headers = ["Date", "Session", "Time", "BP", "Pulse", "Temp", "Incision", "Hardware", "Heat/Weak", "Hand Clums", "R Ear", "Auditory / Positional"]
             table_data = [headers]
 
             for _, row in dataframe.iterrows():
+                notes_summary = str(row['auditory_noises']) if row['auditory_noises'] else "None"
+                if row['positional_palpitations'] == 1:
+                    notes_summary += " | Chest Dubdub"
+
                 table_data.append([
                     str(row['date']),
+                    str(row['time_of_day']),
+                    str(row['entry_time'])[:5],
                     f"{row['systolic']}/{row['diastolic']}",
                     str(row['pulse']),
                     f"{row['temperature']}°C",
@@ -227,20 +247,19 @@ else:
                     str(row['heat_weakness_flare']),
                     str(row['hand_clamsiness']),
                     str(row['right_ear_pain']),
-                    Paragraph(str(row['auditory_noises']), styles['Normal']),
-                    "Yes" if row['positional_palpitations'] == 1 else "No"
+                    Paragraph(notes_summary, styles['Normal'])
                 ])
 
-            t = Table(table_data, colWidths=[55, 45, 35, 40, 40, 45, 50, 50, 35, 120, 55])
+            t = Table(table_data, colWidths=[50, 55, 35, 45, 30, 35, 35, 40, 45, 45, 30, 130])
             t.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E3A8A')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 7),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 5),
+                ('FONTSIZE', (0, 0), (-1, 0), 6.5),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 4),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                ('FONTSIZE', (0, 1), (-1, -1), 6.5),
+                ('FONTSIZE', (0, 1), (-1, -1), 6),
             ]))
             elements.append(t)
             doc.build(elements)
