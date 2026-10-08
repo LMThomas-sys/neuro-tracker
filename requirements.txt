@@ -1,7 +1,4 @@
 streamlit
-reportlab
-python-dateutilstreamlit
 pandas
 plotly
 reportlab
-libsql-experimental
