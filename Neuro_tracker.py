@@ -1,6 +1,5 @@
 import datetime
 import io
-import hashlib
 import pandas as pd
 import streamlit as st
 import plotly.express as px
@@ -13,17 +12,13 @@ from reportlab.lib import colors
 
 # Streamlit Page Config
 st.set_page_config(
-    page_title="Neuro-Tracker | Dr. Ananda's Practice",
+    page_title="Post-MVD Recovery Tracker",
     layout="wide",
     initial_sidebar_state="expanded",
     page_icon="🧠"
 )
 
-# Helper function to hash passwords
-def hash_password(password):
-    return hashlib.sha256(str.encode(password)).hexdigest()
-
-# Connect to Turso Cloud DB (or local fallback)
+# Connect to Turso Cloud DB (or fallback to local sqlite for testing)
 def get_connection():
     if "TURSO_URL" in st.secrets:
         return libsql.connect(
@@ -40,33 +35,9 @@ def init_db():
     if hasattr(conn, 'sync'):
         conn.sync()
     c = conn.cursor()
-    
-    # 1. Users Table (Authentication & Access Control)
+    # CN V & CN VIII specialized schema
     c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            password_hash TEXT,
-            role TEXT, -- 'doctor' or 'patient'
-            patient_id TEXT -- Stores Hospital MRN
-        )
-    ''')
-
-    # 2. Patient Profiles Table (Indexed by MRN)
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS patient_profiles (
-            patient_id TEXT PRIMARY KEY, -- Hospital MRN Number
-            patient_name TEXT,
-            diagnosis TEXT,
-            procedure_type TEXT,
-            affected_cranial_nerves TEXT,
-            created_date TEXT
-        )
-    ''')
-
-    # 3. Daily Logs Table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS multi_patient_logs (
-            patient_id TEXT, -- Hospital MRN Number
+        CREATE TABLE IF NOT EXISTS daily_logs_cn_v_viii (
             date TEXT,
             time_of_day TEXT,
             entry_time TEXT,
@@ -78,7 +49,6 @@ def init_db():
             hardware_sensitivity INTEGER,
             trigeminal_pain INTEGER,
             facial_numbness INTEGER,
-            facial_weakness INTEGER,
             jaw_stiffness INTEGER,
             snhl_hearing_clarity INTEGER,
             ear_fullness INTEGER,
@@ -88,175 +58,224 @@ def init_db():
             auditory_noises TEXT,
             positional_palpitations INTEGER,
             eye_dryness INTEGER,
-            csf_fluid_drip INTEGER,
             notes TEXT,
-            PRIMARY KEY (patient_id, date, time_of_day)
+            PRIMARY KEY (date, time_of_day)
         )
     ''')
-    
-    # Default initial accounts setup
-    c.execute("SELECT COUNT(*) FROM users")
-    if c.fetchone()[0] == 0:
-        # Create Primary Doctor Account (Default Pass: doc123)
-        c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", ("drananda", hash_password("doc123"), "doctor", "ALL"))
-        
-        # Create Generic Starter Patient Profile (Default Pass: patient123)
-        c.execute("INSERT INTO patient_profiles VALUES ('MRN-10001', 'Patient Sample A', 'Trigeminal Neuralgia', 'Retrosigmoid Craniotomy / MVD', 'CN V, CN VIII', '2026-10-08')")
-        c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", ("patient1", hash_password("patient123"), "patient", "MRN-10001"))
-
     conn.commit()
     conn.close()
 
 init_db()
 
-# --- AUTHENTICATION SESSION STATE ---
-if 'authenticated' not in st.session_state:
-    st.session_state['authenticated'] = False
-    st.session_state['user_role'] = None
-    st.session_state['assigned_patient_id'] = None
-    st.session_state['username'] = None
+st.title("🧠 Post-MVD Recovery Tracker")
+st.caption("Patient Recovery Log for Dr. Ananda | Right Retrosigmoid Craniotomy / MVD (CN V & CN VIII)")
 
-if 'default_log_time' not in st.session_state:
-    st.session_state['default_log_time'] = datetime.datetime.now().time()
+# Sidebar - Multi-Daily Entry Form
+st.sidebar.header("📝 Daily Log Entry (3x Daily)")
 
-# --- LOGIN FORM ---
-if not st.session_state['authenticated']:
-    st.title("🧠 Neuro-Tracker Portal Login")
-    
-    with st.form("login_form"):
-        username = st.text_input("Username").strip().lower()
-        password = st.text_input("Password", type="password")
-        submit = st.form_submit_button("Login", type="primary")
-        
-        if submit:
-            conn = get_connection()
-            c = conn.cursor()
-            c.execute("SELECT password_hash, role, patient_id FROM users WHERE username = ?", (username,))
-            user = c.fetchone()
-            conn.close()
-            
-            if user and user[0] == hash_password(password):
-                st.session_state['authenticated'] = True
-                st.session_state['username'] = username
-                st.session_state['user_role'] = user[1]
-                st.session_state['assigned_patient_id'] = user[2]
-                st.success(f"Welcome, {username.title()}!")
-                st.rerun()
-            else:
-                st.error("Invalid Username or Password.")
-    st.stop()
+log_date = st.sidebar.date_input("Log Date", datetime.date.today())
 
-# --- LOGGED-IN APPLICATION INTERFACE ---
+# Time Slot Selector
+time_of_day = st.sidebar.selectbox(
+    "Time Slot / Session",
+    ["Morning (AM)", "Afternoon (PM)", "Evening / Night (PM)"]
+)
 
-st.sidebar.write(f"Logged in: **{st.session_state['username']}** ({st.session_state['user_role'].title()})")
-if st.sidebar.button("Logout"):
-    st.session_state['authenticated'] = False
-    st.rerun()
+exact_time = st.sidebar.time_input("Exact Time Taken", datetime.datetime.now().time())
 
-st.title("🧠 Neuro-Tracker Platform")
+st.sidebar.subheader("🩺 Vitals")
+systolic = st.sidebar.number_input("Systolic BP (mmHg)", 80, 200, 120)
+diastolic = st.sidebar.number_input("Diastolic BP (mmHg)", 50, 130, 80)
+pulse = st.sidebar.number_input("Pulse Rate (bpm)", 40, 180, 72)
+temperature = st.sidebar.number_input("Body Temp (°C)", 35.0, 41.0, 36.8, step=0.1)
 
-# Fetch Profiles based on Role
+st.sidebar.subheader("🧠 CN V (Trigeminal Nerve) Symptoms")
+trigeminal_pain = st.sidebar.slider("Trigeminal Pain / Electric Zaps (0-10)", 0, 10, 0)
+facial_numbness = st.sidebar.slider("Facial Numbness / Tingling (0-10)", 0, 10, 0)
+jaw_stiffness = st.sidebar.slider("Jaw Stiffness / Chewing Discomfort (0-10)", 0, 10, 0)
+eye_dryness = st.sidebar.checkbox("Surgical-Side Eye Dryness / Reduced Blink")
+
+st.sidebar.subheader("👂 CN VIII (Vestibulocochlear) & Ear Symptoms")
+snhl_hearing_clarity = st.sidebar.slider("SNHL Hearing Muffledness (0=Normal, 10=Very Muffled)", 0, 10, 0)
+ear_fullness = st.sidebar.slider("Ear Fullness / Pressure (0-10)", 0, 10, 0)
+dizziness_vertigo = st.sidebar.slider("Dizziness / Vertigo / Imbalance (0-10)", 0, 10, 0)
+
+auditory_noises = st.sidebar.multiselect(
+    "Auditory Tinnitus & Positional Noises",
+    [
+        "None",
+        "Whooshing Sound (when lying flat)",
+        "Straight Humming / Wind Blowing (non-pulsating)",
+        "Washing Machine Sound",
+        "High-Pitch Ringing / Hissing",
+        "Hyperacusis (Loud Sound Sensitivity)"
+    ]
+)
+
+st.sidebar.subheader("🤕 Surgical Site & General Recovery")
+incision_pain = st.sidebar.slider("Incision Pain (0-10)", 0, 10, 0)
+hardware_sens = st.sidebar.slider("Hardware/Screw Sensitivity (0-10)", 0, 10, 0)
+heat_weakness = st.sidebar.slider("Heat Flare-up / Muscle Weakness (0-10)", 0, 10, 0)
+hand_clumsy = st.sidebar.slider("Hand Clumsiness / Dropping Objects (0-10)", 0, 10, 0)
+
+st.sidebar.subheader("🫀 Autonomic & Positional Triggers")
+positional_palpitations = st.sidebar.checkbox("Chest 'Dubdub' / Palpitations when Lying Flat")
+notes = st.sidebar.text_area("Additional Notes / Specific Triggers")
+
+if st.sidebar.button("Save Entry", type="primary"):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO daily_logs_cn_v_viii VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(date, time_of_day) DO UPDATE SET
+            entry_time=excluded.entry_time,
+            systolic=excluded.systolic,
+            diastolic=excluded.diastolic,
+            pulse=excluded.pulse,
+            temperature=excluded.temperature,
+            incision_pain=excluded.incision_pain,
+            hardware_sensitivity=excluded.hardware_sensitivity,
+            trigeminal_pain=excluded.trigeminal_pain,
+            facial_numbness=excluded.facial_numbness,
+            jaw_stiffness=excluded.jaw_stiffness,
+            snhl_hearing_clarity=excluded.snhl_hearing_clarity,
+            ear_fullness=excluded.ear_fullness,
+            dizziness_vertigo=excluded.dizziness_vertigo,
+            heat_weakness_flare=excluded.heat_weakness_flare,
+            hand_clumsiness=excluded.hand_clumsiness,
+            auditory_noises=excluded.auditory_noises,
+            positional_palpitations=excluded.positional_palpitations,
+            eye_dryness=excluded.eye_dryness,
+            notes=excluded.notes
+    ''', (
+        str(log_date), time_of_day, str(exact_time), systolic, diastolic, pulse, temperature,
+        incision_pain, hardware_sens, trigeminal_pain, facial_numbness, jaw_stiffness,
+        snhl_hearing_clarity, ear_fullness, dizziness_vertigo, heat_weakness, hand_clumsy,
+        ", ".join(auditory_noises), 1 if positional_palpitations else 0, 1 if eye_dryness else 0, notes
+    ))
+    conn.commit()
+    if hasattr(conn, 'sync'):
+        conn.sync()
+    conn.close()
+    st.sidebar.success(f"Saved {time_of_day} entry for {log_date} ({exact_time.strftime('%I:%M %p')})")
+
+# Main Dashboard
 conn = get_connection()
-
-if st.session_state['user_role'] == 'doctor':
-    profiles_df = pd.read_sql_query("SELECT * FROM patient_profiles", conn)
-    if not profiles_df.empty:
-        selected_patient_id = st.sidebar.selectbox(
-            "👤 Select Patient (Hospital MRN)",
-            options=profiles_df['patient_id'].tolist(),
-            format_func=lambda mrn: f"[{mrn}] - {profiles_df[profiles_df['patient_id'] == mrn]['patient_name'].values[0]}"
-        )
-    else:
-        selected_patient_id = None
-else:
-    profiles_df = pd.read_sql_query(
-        "SELECT * FROM patient_profiles WHERE patient_id = ?", 
-        conn, params=(st.session_state['assigned_patient_id'],)
-    )
-    selected_patient_id = st.session_state['assigned_patient_id']
-
+df = pd.read_sql_query("SELECT * FROM daily_logs_cn_v_viii ORDER BY date ASC, entry_time ASC", conn)
 conn.close()
 
-if selected_patient_id and not profiles_df.empty:
-    active_profile = profiles_df[profiles_df['patient_id'] == selected_patient_id].iloc[0]
-    st.sidebar.info(f"**MRN:** {active_profile['patient_id']}\n\n**Patient:** {active_profile['patient_name']}\n\n**Procedure:** {active_profile['procedure_type']}\n\n**Nerves:** {active_profile['affected_cranial_nerves']}")
+if df.empty:
+    st.info("No logs recorded yet. Use the sidebar menu to enter your first 3x daily reading.")
 else:
-    active_profile = None
+    df['date_time_label'] = df['date'] + " (" + df['time_of_day'] + ")"
 
-# --- DOCTOR-ONLY CONTROLS ---
-if st.session_state['user_role'] == 'doctor':
-    # 1. REGISTER NEW PATIENT
-    with st.sidebar.expander("➕ Register New Patient (MRN)"):
-        with st.form("register_patient_form"):
-            new_mrn = st.text_input("Hospital MRN (e.g., MRN-884012)").strip().upper()
-            new_name = st.text_input("Patient Full Name")
-            new_username = st.text_input("Patient Portal Username").strip().lower()
-            new_pass = st.text_input("Initial Password", type="password")
-            new_diag = st.text_input("Diagnosis")
-            new_proc = st.text_input("Procedure")
-            new_nerves = st.multiselect("Affected Nerves", ["CN V (Trigeminal)", "CN VII (Facial)", "CN VIII (Vestibulocochlear)", "CN IX/X"])
-            reg_submit = st.form_submit_button("Register Patient")
-            
-            if reg_submit:
-                if new_mrn and new_name and new_username and new_pass:
-                    conn = get_connection()
-                    c = conn.cursor()
-                    try:
-                        c.execute("INSERT INTO patient_profiles VALUES (?, ?, ?, ?, ?, ?)", (
-                            new_mrn, new_name, new_diag, new_proc, ", ".join(new_nerves), str(datetime.date.today())
-                        ))
-                        c.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (
-                            new_username, hash_password(new_pass), "patient", new_mrn
-                        ))
-                        conn.commit()
-                        if hasattr(conn, 'sync'):
-                            conn.sync()
-                        st.success(f"Registered {new_name} (MRN: {new_mrn}) successfully!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error registering user (MRN or Username already exists): {e}")
-                    finally:
-                        conn.close()
-                else:
-                    st.warning("Please fill in all required fields.")
+    tab1, tab2, tab3 = st.tabs(["📊 Analytics & Trends", "📋 Raw Data", "📄 PDF Export for Dr. Ananda"])
 
-    # 2. UPDATE PATIENT MRN
-    with st.sidebar.expander("✏️ Update Patient MRN"):
-        with st.form("update_mrn_form"):
-            conn = get_connection()
-            all_profiles = pd.read_sql_query("SELECT patient_id, patient_name FROM patient_profiles", conn)
-            conn.close()
-            
-            mrn_options = all_profiles['patient_id'].tolist() if not all_profiles.empty else []
-            old_mrn = st.selectbox(
-                "Select Patient to Update",
-                mrn_options,
-                format_func=lambda mrn: f"[{mrn}] - {all_profiles[all_profiles['patient_id'] == mrn]['patient_name'].values[0]}" if not all_profiles.empty else mrn
+    with tab1:
+        df['whooshing_lying_flat'] = df['auditory_noises'].fillna('').apply(
+            lambda x: 1 if "Whooshing Sound (when lying flat)" in x else 0
+        )
+
+        st.subheader("Latest Session Summary")
+        col1, col2, col3, col4 = st.columns(4)
+        latest = df.iloc[-1]
+        col1.metric("Blood Pressure", f"{latest['systolic']}/{latest['diastolic']} mmHg", delta=latest['time_of_day'], delta_color="off")
+        col2.metric("Pulse", f"{latest['pulse']} bpm")
+        col3.metric("CN V Zap Pain", f"{latest['trigeminal_pain']}/10")
+        col4.metric("CN VIII Muffledness", f"{latest['snhl_hearing_clarity']}/10")
+
+        st.subheader("📈 Blood Pressure & Pulse Trends (3x Daily)")
+        fig_vitals = px.line(df, x="date_time_label", y=["systolic", "diastolic", "pulse"],
+                             title="Vitals Across Daily Sessions", markers=True)
+        fig_vitals.update_xaxes(title="Date & Session")
+        st.plotly_chart(fig_vitals, use_container_width=True)
+
+        st.subheader("🧠 CN V (Trigeminal) vs. CN VIII (Vestibulocochlear) Recovery")
+        fig_cn = px.line(
+            df, x="date_time_label",
+            y=["trigeminal_pain", "facial_numbness", "snhl_hearing_clarity", "ear_fullness", "dizziness_vertigo"],
+            title="Cranial Nerve Symptom Severity Over Time", markers=True
+        )
+        fig_cn.update_xaxes(title="Date & Session")
+        st.plotly_chart(fig_cn, use_container_width=True)
+
+        st.subheader("🛌 Positional Symptoms (Lying Flat)")
+        fig_positional = go.Figure()
+        fig_positional.add_trace(go.Bar(
+            x=df['date_time_label'], y=df['whooshing_lying_flat'],
+            name="Whooshing Sound (Lying Flat)", marker_color="#8B5CF6"
+        ))
+        fig_positional.add_trace(go.Bar(
+            x=df['date_time_label'], y=df['positional_palpitations'],
+            name="Chest 'Dubdub' / Palpitations", marker_color="#EF4444"
+        ))
+        fig_positional.update_layout(
+            barmode='group',
+            title="Positional Auditory & Cardiac Symptoms by Session",
+            xaxis_title="Date & Session",
+            yaxis=dict(title="Occurrence", tickvals=[0, 1], ticktext=["Absent", "Present"])
+        )
+        st.plotly_chart(fig_positional, use_container_width=True)
+
+    with tab2:
+        st.dataframe(df, use_container_width=True)
+
+    with tab3:
+        st.subheader("Generate Clinical Summary PDF")
+
+        def generate_pdf(dataframe):
+            buffer = io.BytesIO()
+            doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=15, leftMargin=15, topMargin=20, bottomMargin=20)
+            elements = []
+            styles = getSampleStyleSheet()
+
+            elements.append(Paragraph("<b>Post-MVD Recovery Log (CN V & CN VIII Focus)</b>", styles['Title']))
+            elements.append(Paragraph("<b>Attending Neurosurgeon:</b> Dr. Ananda", styles['Normal']))
+            elements.append(Paragraph(f"<b>Report Generated:</b> {datetime.date.today()}", styles['Normal']))
+            elements.append(Spacer(1, 10))
+
+            headers = ["Date", "Session", "BP", "Pulse", "CN V Zaps", "Facial Numb", "SNHL Muffled", "Ear Full", "Dizzy", "Auditory / Positional"]
+            table_data = [headers]
+
+            for _, row in dataframe.iterrows():
+                notes_summary = str(row['auditory_noises']) if row['auditory_noises'] else "None"
+                if row['positional_palpitations'] == 1:
+                    notes_summary += " | Chest Dubdub"
+
+                table_data.append([
+                    str(row['date']),
+                    str(row['time_of_day']),
+                    f"{row['systolic']}/{row['diastolic']}",
+                    str(row['pulse']),
+                    f"{row['trigeminal_pain']}/10",
+                    f"{row['facial_numbness']}/10",
+                    f"{row['snhl_hearing_clarity']}/10",
+                    f"{row['ear_fullness']}/10",
+                    f"{row['dizziness_vertigo']}/10",
+                    Paragraph(notes_summary, styles['Normal'])
+                ])
+
+            t = Table(table_data, colWidths=[55, 60, 45, 35, 45, 50, 55, 45, 40, 110])
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E3A8A')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 6.5),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 4),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('FONTSIZE', (0, 1), (-1, -1), 6),
+            ]))
+            elements.append(t)
+            doc.build(elements)
+            buffer.seek(0)
+            return buffer
+
+        if st.button("Build PDF Report"):
+            pdf_data = generate_pdf(df)
+            st.download_button(
+                label="📥 Download PDF for Dr. Ananda",
+                data=pdf_data,
+                file_name=f"MVD_Recovery_Report_CN_V_VIII_{datetime.date.today()}.pdf",
+                mime="application/pdf"
             )
-            
-            new_mrn_input = st.text_input("New Hospital MRN (e.g., MRN-0010826)").strip().upper()
-            update_mrn_submit = st.form_submit_button("Update MRN")
-            
-            if update_mrn_submit and old_mrn and new_mrn_input:
-                if old_mrn == new_mrn_input:
-                    st.warning("New MRN is the same as current MRN.")
-                else:
-                    conn = get_connection()
-                    c = conn.cursor()
-                    try:
-                        c.execute("UPDATE patient_profiles SET patient_id = ? WHERE patient_id = ?", (new_mrn_input, old_mrn))
-                        c.execute("UPDATE users SET patient_id = ? WHERE patient_id = ?", (new_mrn_input, old_mrn))
-                        c.execute("UPDATE multi_patient_logs SET patient_id = ? WHERE patient_id = ?", (new_mrn_input, old_mrn))
-                        
-                        conn.commit()
-                        if hasattr(conn, 'sync'):
-                            conn.sync()
-                            
-                        st.success(f"Updated MRN from {old_mrn} to {new_mrn_input}!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error updating MRN: {e}")
-                    finally:
-                        conn.close()
-
-    # 3. RESET PATIENT PASSWORD
