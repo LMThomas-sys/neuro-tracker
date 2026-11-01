@@ -158,6 +158,15 @@ else:
 
     with tab2:
         st.dataframe(df, use_container_width=True)
+        
+        # CSV Export for Canva / Excel
+        csv_buffer = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📊 Export CSV Data for Canva/Excel",
+            data=csv_buffer,
+            file_name=f"neuro_tracker_data_{datetime.date.today()}.csv",
+            mime="text/csv"
+        )
 
     with tab3:
         st.subheader("📄 Clinical PDF Report Generation")
@@ -171,4 +180,77 @@ else:
 
             elements.append(Paragraph("<b>Personal Post-Op Recovery Report (Clean Clinical Summary)</b>", styles['Title']))
             elements.append(Paragraph(f"<b>Report Generated On:</b> {datetime.date.today()} (Unrecorded zero-value symptom columns omitted)", styles['Normal']))
-            elements.append
+            elements.append(Spacer(1, 10))
+
+            has_cn_v = (dataframe['trigeminal_pain'] > 0).any()
+            has_numbness = (dataframe['facial_numbness'] > 0).any()
+            has_cn_viii = (dataframe['snhl_hearing_clarity'] > 0).any()
+            has_fullness = (dataframe['ear_fullness'] > 0).any()
+            has_dizziness = (dataframe['dizziness_vertigo'] > 0).any()
+
+            headers = ["Date & Time", "Session", "BP", "Pulse"]
+            active_columns = []
+
+            if has_cn_v:
+                headers.append("CN V Zap Pain")
+                active_columns.append('trigeminal_pain')
+            if has_numbness:
+                headers.append("Facial Numbness")
+                active_columns.append('facial_numbness')
+            if has_cn_viii:
+                headers.append("CN VIII Muffle")
+                active_columns.append('snhl_hearing_clarity')
+            if has_fullness:
+                headers.append("Ear Fullness")
+                active_columns.append('ear_fullness')
+            if has_dizziness:
+                headers.append("Dizziness")
+                active_columns.append('dizziness_vertigo')
+
+            headers.append("Clinical Notes & Triggers")
+            table_data = [headers]
+
+            for _, row in dataframe.iterrows():
+                time_str = str(row['entry_time'])[:5] if row['entry_time'] else "--:--"
+                row_cells = [
+                    f"{row['date']} {time_str}",
+                    str(row['time_of_day']),
+                    f"{row['systolic']}/{row['diastolic']}",
+                    str(row['pulse'])
+                ]
+
+                for col in active_columns:
+                    row_cells.append(f"{row[col]}/10")
+
+                row_cells.append(Paragraph(str(row['notes']) if row['notes'] else "None", styles['Normal']))
+                table_data.append(row_cells)
+
+            base_widths = [95, 80, 55, 40]
+            dynamic_width = [65] * len(active_columns)
+            note_width = [140]
+            col_widths = base_widths + dynamic_width + note_width
+
+            t = Table(table_data, colWidths=col_widths)
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E3A8A')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 7.5),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('FONTSIZE', (0, 1), (-1, -1), 7),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
+            ]))
+            elements.append(t)
+            doc.build(elements)
+            buffer.seek(0)
+            return buffer
+
+        pdf_data = generate_pdf(df)
+        st.download_button(
+            label="📥 Download Clean Landscape PDF Report",
+            data=pdf_data,
+            file_name=f"Clean_Recovery_Report_{datetime.date.today()}.pdf",
+            mime="application/pdf",
+            type="primary"
+        )
