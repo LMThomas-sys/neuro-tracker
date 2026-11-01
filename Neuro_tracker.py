@@ -150,11 +150,11 @@ else:
         latest = df.iloc[-1]
         col1.metric("BP", f"{latest['systolic']}/{latest['diastolic']} mmHg")
         col2.metric("Pulse", f"{latest['pulse']} bpm")
-        col3.metric("CN V Zap Pain", f"{latest['trigeminal_pain']}/10")
-        col4.metric("CN VIII Muffledness", f"{latest['snhl_hearing_clarity']}/10")
+        col3.metric("CN V Zap Pain", f"{latest['trigininal_pain'] if 'trigininal_pain' in latest else latest['trigeminal_pain']}/10")
+        col4.metric("Incision Pain", f"{latest['incision_pain']}/10")
 
         st.plotly_chart(px.line(df, x="date_time_label", y=["systolic", "diastolic", "pulse"], title="Vitals Trends", markers=True), use_container_width=True)
-        st.plotly_chart(px.line(df, x="date_time_label", y=["trigeminal_pain", "facial_numbness", "snhl_hearing_clarity", "ear_fullness", "dizziness_vertigo"], title="Cranial Nerve Intensity Trends", markers=True), use_container_width=True)
+        st.plotly_chart(px.line(df, x="date_time_label", y=["trigeminal_pain", "incision_pain", "facial_numbness", "snhl_hearing_clarity", "dizziness_vertigo"], title="Symptom Intensity Trends", markers=True), use_container_width=True)
 
     with tab2:
         st.dataframe(df, use_container_width=True)
@@ -187,6 +187,7 @@ else:
             has_cn_viii = (dataframe['snhl_hearing_clarity'] > 0).any()
             has_fullness = (dataframe['ear_fullness'] > 0).any()
             has_dizziness = (dataframe['dizziness_vertigo'] > 0).any()
+            has_incision = (dataframe['incision_pain'] > 0).any()
 
             headers = ["Date & Time", "Session", "BP", "Pulse"]
             active_columns = []
@@ -206,6 +207,9 @@ else:
             if has_dizziness:
                 headers.append("Dizziness")
                 active_columns.append('dizziness_vertigo')
+            if has_incision:
+                headers.append("Incision Pain")
+                active_columns.append('incision_pain')
 
             headers.append("Clinical Notes & Triggers")
             table_data = [headers]
