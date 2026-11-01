@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import letter, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
@@ -162,19 +162,19 @@ else:
     with tab3:
         def generate_pdf(dataframe):
             buffer = io.BytesIO()
-            doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=15, leftMargin=15, topMargin=20, bottomMargin=20)
+            # Set page size to landscape orientation
+            doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
             elements = []
             styles = getSampleStyleSheet()
 
-            elements.append(Paragraph("<b>Personal Post-Op Recovery Report</b>", styles['Title']))
+            elements.append(Paragraph("<b>Personal Post-Op Recovery Report (Landscape Clinical Summary)</b>", styles['Title']))
             elements.append(Paragraph(f"<b>Report Generated On:</b> {datetime.date.today()}", styles['Normal']))
             elements.append(Spacer(1, 10))
 
-            # Updated Specific Clinical Headers
             headers = [
                 "Date & Exact Time",
                 "Session Slot",
-                "BP",
+                "BP (mmHg)",
                 "Pulse",
                 "CN V Zap Pain",
                 "Facial Numbness",
@@ -186,9 +186,8 @@ else:
             table_data = [headers]
 
             for _, row in dataframe.iterrows():
-                # Formats entry_time alongside date (e.g., 2026-10-07 13:28)
                 time_str = str(row['entry_time'])[:5] if row['entry_time'] else "--:--"
-                formatted_date_time = f"{row['date']}\n{time_str}"
+                formatted_date_time = f"{row['date']} {time_str}"
                 
                 table_data.append([
                     formatted_date_time,
@@ -203,15 +202,16 @@ else:
                     Paragraph(str(row['notes']) if row['notes'] else "None", styles['Normal'])
                 ])
 
-            t = Table(table_data, colWidths=[65, 60, 45, 35, 50, 50, 55, 45, 40, 100])
+            # Total width allocated across columns to fit wide landscape letter (approx 750 pt printable width)
+            t = Table(table_data, colWidths=[95, 80, 55, 40, 70, 70, 85, 60, 55, 140])
             t.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E3A8A')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 6.5),
+                ('FONTSIZE', (0, 0), (-1, 0), 7.5),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                ('FONTSIZE', (0, 1), (-1, -1), 6),
+                ('FONTSIZE', (0, 1), (-1, -1), 7),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ]))
             elements.append(t)
@@ -219,11 +219,11 @@ else:
             buffer.seek(0)
             return buffer
 
-        if st.button("Build PDF Report"):
+        if st.button("Build Landscape PDF Report"):
             pdf_data = generate_pdf(df)
             st.download_button(
-                label="📥 Download My PDF Report",
+                label="📥 Download Landscape PDF Report",
                 data=pdf_data,
-                file_name=f"My_Recovery_Report_{datetime.date.today()}.pdf",
+                file_name=f"My_Recovery_Report_Landscape_{datetime.date.today()}.pdf",
                 mime="application/pdf"
             )
