@@ -1,9 +1,10 @@
 import datetime
 import io
+import sqlite3
 import pandas as pd
 import streamlit as st
 import plotly.express as px
-import sqlite3
+import plotly.graph_objects as go
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
@@ -60,10 +61,9 @@ def init_db(reset=False):
     conn.commit()
     conn.close()
 
-# Keep reset=False to preserve saved logs
 init_db(reset=False)
 
-# Initialize time in session state ONCE so it doesn't reset on every widget click
+# Lock time input via Session State
 if "logged_time" not in st.session_state:
     st.session_state["logged_time"] = datetime.datetime.now().time()
 
@@ -75,8 +75,6 @@ st.sidebar.header("📝 New Entry")
 
 log_date = st.sidebar.date_input("Log Date", datetime.date.today())
 time_of_day = st.sidebar.selectbox("Session Slot", ["Morning (AM)", "Afternoon (PM)", "Evening / Night (PM)"])
-
-# Time input now binds stably to session_state
 exact_time = st.sidebar.time_input("Time Taken", key="logged_time")
 
 st.sidebar.subheader("🩺 Vitals")
@@ -86,14 +84,14 @@ pulse = st.sidebar.number_input("Pulse (bpm)", 40, 180, 72)
 temperature = st.sidebar.number_input("Temp (°C)", 35.0, 41.0, 36.8, step=0.1)
 
 st.sidebar.subheader("⚡ Cranial Nerve Symptoms")
-trigeminal_pain = st.sidebar.slider("Trigeminal Zap / Pain (0-10)", 0, 10, 0)
+trigeminal_pain = st.sidebar.slider("CN V Trigeminal Zap / Pain (0-10)", 0, 10, 0)
 facial_numbness = st.sidebar.slider("Facial Numbness (0-10)", 0, 10, 0)
 facial_weakness = st.sidebar.slider("Facial Weakness (0-10)", 0, 10, 0)
 jaw_stiffness = st.sidebar.slider("Jaw Stiffness (0-10)", 0, 10, 0)
 eye_dryness = 1 if st.sidebar.checkbox("Surgical-Side Eye Dryness") else 0
 
-snhl_hearing_clarity = st.sidebar.slider("Hearing Muffledness (0-10)", 0, 10, 0)
-ear_fullness = st.sidebar.slider("Ear Pressure (0-10)", 0, 10, 0)
+snhl_hearing_clarity = st.sidebar.slider("CN VIII Hearing Muffledness (0-10)", 0, 10, 0)
+ear_fullness = st.sidebar.slider("Ear Pressure / Fullness (0-10)", 0, 10, 0)
 dizziness_vertigo = st.sidebar.slider("Dizziness / Vertigo (0-10)", 0, 10, 0)
 auditory_noises = st.sidebar.multiselect(
     "Tinnitus Symptoms",
@@ -152,11 +150,11 @@ else:
         latest = df.iloc[-1]
         col1.metric("BP", f"{latest['systolic']}/{latest['diastolic']} mmHg")
         col2.metric("Pulse", f"{latest['pulse']} bpm")
-        col3.metric("Trigeminal Pain", f"{latest['trigeminal_pain']}/10")
-        col4.metric("Hearing Clarity Loss", f"{latest['snhl_hearing_clarity']}/10")
+        col3.metric("CN V Zap Pain", f"{latest['trigeminal_pain']}/10")
+        col4.metric("CN VIII Muffledness", f"{latest['snhl_hearing_clarity']}/10")
 
         st.plotly_chart(px.line(df, x="date_time_label", y=["systolic", "diastolic", "pulse"], title="Vitals Trends", markers=True), use_container_width=True)
-        st.plotly_chart(px.line(df, x="date_time_label", y=["trigeminal_pain", "facial_numbness", "snhl_hearing_clarity", "ear_fullness", "dizziness_vertigo"], title="Symptom Intensity Trends", markers=True), use_container_width=True)
+        st.plotly_chart(px.line(df, x="date_time_label", y=["trigeminal_pain", "facial_numbness", "snhl_hearing_clarity", "ear_fullness", "dizziness_vertigo"], title="Cranial Nerve Intensity Trends", markers=True), use_container_width=True)
 
     with tab2:
         st.dataframe(df, use_container_width=True)
@@ -172,18 +170,40 @@ else:
             elements.append(Paragraph(f"<b>Report Generated On:</b> {datetime.date.today()}", styles['Normal']))
             elements.append(Spacer(1, 10))
 
-            headers = ["Date", "Session", "BP", "Pulse", "CN V", "Numbness", "CN VIII", "Ear Fullness", "Dizziness", "Notes"]
+            # Updated Specific Clinical Headers
+            headers = [
+                "Date & Exact Time",
+                "Session Slot",
+                "BP",
+                "Pulse",
+                "CN V Zap Pain",
+                "Facial Numbness",
+                "CN VIII Hearing Muffle",
+                "Ear Fullness",
+                "Dizziness",
+                "Clinical Notes & Triggers"
+            ]
             table_data = [headers]
 
             for _, row in dataframe.iterrows():
+                # Formats entry_time alongside date (e.g., 2026-10-07 13:28)
+                time_str = str(row['entry_time'])[:5] if row['entry_time'] else "--:--"
+                formatted_date_time = f"{row['date']}\n{time_str}"
+                
                 table_data.append([
-                    str(row['date']), str(row['time_of_day']), f"{row['systolic']}/{row['diastolic']}",
-                    str(row['pulse']), f"{row['trigeminal_pain']}/10", f"{row['facial_numbness']}/10",
-                    f"{row['snhl_hearing_clarity']}/10", f"{row['ear_fullness']}/10", f"{row['dizziness_vertigo']}/10",
+                    formatted_date_time,
+                    str(row['time_of_day']),
+                    f"{row['systolic']}/{row['diastolic']}",
+                    str(row['pulse']),
+                    f"{row['trigeminal_pain']}/10",
+                    f"{row['facial_numbness']}/10",
+                    f"{row['snhl_hearing_clarity']}/10",
+                    f"{row['ear_fullness']}/10",
+                    f"{row['dizziness_vertigo']}/10",
                     Paragraph(str(row['notes']) if row['notes'] else "None", styles['Normal'])
                 ])
 
-            t = Table(table_data, colWidths=[55, 60, 45, 35, 45, 50, 55, 45, 40, 110])
+            t = Table(table_data, colWidths=[65, 60, 45, 35, 50, 50, 55, 45, 40, 100])
             t.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E3A8A')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -192,6 +212,7 @@ else:
                 ('FONTSIZE', (0, 0), (-1, 0), 6.5),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
                 ('FONTSIZE', (0, 1), (-1, -1), 6),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ]))
             elements.append(t)
             doc.build(elements)
