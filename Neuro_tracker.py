@@ -160,6 +160,9 @@ else:
         st.dataframe(df, use_container_width=True)
 
     with tab3:
+        st.subheader("📄 Clinical PDF Report Generation")
+        st.write("Click below to build and download your clean landscape report with unused symptom columns automatically hidden.")
+
         def generate_pdf(dataframe):
             buffer = io.BytesIO()
             doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
@@ -167,5 +170,62 @@ else:
             styles = getSampleStyleSheet()
 
             elements.append(Paragraph("<b>Personal Post-Op Recovery Report (Clean Clinical Summary)</b>", styles['Title']))
-            elements.append(Paragraph(f"<b>Report Generated On:</b> {datetime.date.today()} (Unrecorded zero-value symptom columns automatically omitted)", styles['Normal']))
+            elements.append(Paragraph(f"<b>Report Generated On:</b> {datetime.date.today()} (Unrecorded zero-value symptom columns omitted)", styles['Normal']))
             elements.append(Spacer(1, 10))
+
+            has_cn_v = (dataframe['trigeminal_pain'] > 0).any()
+            has_numbness = (dataframe['facial_numbness'] > 0).any()
+            has_cn_viii = (dataframe['snhl_hearing_clarity'] > 0).any()
+            has_fullness = (dataframe['ear_fullness'] > 0).any()
+            has_dizziness = (dataframe['dizziness_vertigo'] > 0).any()
+
+            headers = ["Date & Time", "Session", "BP", "Pulse"]
+            active_columns = []
+
+            if has_cn_v:
+                headers.append("CN V Zap Pain")
+                active_columns.append('trigeminal_pain')
+            if has_numbness:
+                headers.append("Facial Numbness")
+                active_columns.append('facial_numbness')
+            if has_cn_viii:
+                headers.append("CN VIII Muffle")
+                active_columns.append('snhl_hearing_clarity')
+            if has_fullness:
+                headers.append("Ear Fullness")
+                active_columns.append('ear_fullness')
+            if has_dizziness:
+                headers.append("Dizziness")
+                active_columns.append('dizziness_vertigo')
+
+            headers.append("Clinical Notes & Triggers")
+            table_data = [headers]
+
+            for _, row in dataframe.iterrows():
+                time_str = str(row['entry_time'])[:5] if row['entry_time'] else "--:--"
+                row_cells = [
+                    f"{row['date']} {time_str}",
+                    str(row['time_of_day']),
+                    f"{row['systolic']}/{row['diastolic']}",
+                    str(row['pulse'])
+                ]
+
+                for col in active_columns:
+                    row_cells.append(f"{row[col]}/10")
+
+                row_cells.append(Paragraph(str(row['notes']) if row['notes'] else "None", styles['Normal']))
+                table_data.append(row_cells)
+
+            base_widths = [95, 80, 55, 40]
+            dynamic_width = [65] * len(active_columns)
+            note_width = [140]
+            col_widths = base_widths + dynamic_width + note_width
+
+            t = Table(table_data, colWidths=col_widths)
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E3A8A')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 7.5),
+                ('GRID',
