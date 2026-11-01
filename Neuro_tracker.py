@@ -162,68 +162,34 @@ else:
     with tab3:
         def generate_pdf(dataframe):
             buffer = io.BytesIO()
-            # Set page size to landscape orientation
             doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
             elements = []
             styles = getSampleStyleSheet()
 
-            elements.append(Paragraph("<b>Personal Post-Op Recovery Report (Landscape Clinical Summary)</b>", styles['Title']))
-            elements.append(Paragraph(f"<b>Report Generated On:</b> {datetime.date.today()}", styles['Normal']))
+            elements.append(Paragraph("<b>Personal Post-Op Recovery Report (Clean Clinical Summary)</b>", styles['Title']))
+            elements.append(Paragraph(f"<b>Report Generated On:</b> {datetime.date.today()} (Unrecorded zero-value symptom columns automatically omitted)", styles['Normal']))
             elements.append(Spacer(1, 10))
 
-            headers = [
-                "Date & Exact Time",
-                "Session Slot",
-                "BP (mmHg)",
-                "Pulse",
-                "CN V Zap Pain",
-                "Facial Numbness",
-                "CN VIII Hearing Muffle",
-                "Ear Fullness",
-                "Dizziness",
-                "Clinical Notes & Triggers"
-            ]
-            table_data = [headers]
+            # Dynamically check which symptoms actually have recorded data (> 0 or non-empty)
+            has_cn_v = (dataframe['trigeminal_pain'] > 0).any()
+            has_numbness = (dataframe['facial_numbness'] > 0).any()
+            has_cn_viii = (dataframe['snhl_hearing_clarity'] > 0).any()
+            has_fullness = (dataframe['ear_fullness'] > 0).any()
+            has_dizziness = (dataframe['dizziness_vertigo'] > 0).any()
 
-            for _, row in dataframe.iterrows():
-                time_str = str(row['entry_time'])[:5] if row['entry_time'] else "--:--"
-                formatted_date_time = f"{row['date']} {time_str}"
-                
-                table_data.append([
-                    formatted_date_time,
-                    str(row['time_of_day']),
-                    f"{row['systolic']}/{row['diastolic']}",
-                    str(row['pulse']),
-                    f"{row['trigeminal_pain']}/10",
-                    f"{row['facial_numbness']}/10",
-                    f"{row['snhl_hearing_clarity']}/10",
-                    f"{row['ear_fullness']}/10",
-                    f"{row['dizziness_vertigo']}/10",
-                    Paragraph(str(row['notes']) if row['notes'] else "None", styles['Normal'])
-                ])
+            # Build dynamic table headers based on active records
+            headers = ["Date & Time", "Session", "BP", "Pulse"]
+            active_columns = []
 
-            # Total width allocated across columns to fit wide landscape letter (approx 750 pt printable width)
-            t = Table(table_data, colWidths=[95, 80, 55, 40, 70, 70, 85, 60, 55, 140])
-            t.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E3A8A')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 7.5),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                ('FONTSIZE', (0, 1), (-1, -1), 7),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ]))
-            elements.append(t)
-            doc.build(elements)
-            buffer.seek(0)
-            return buffer
-
-        if st.button("Build Landscape PDF Report"):
-            pdf_data = generate_pdf(df)
-            st.download_button(
-                label="📥 Download Landscape PDF Report",
-                data=pdf_data,
-                file_name=f"My_Recovery_Report_Landscape_{datetime.date.today()}.pdf",
-                mime="application/pdf"
-            )
+            if has_cn_v:
+                headers.append("CN V Zap Pain")
+                active_columns.append('trigeminal_pain')
+            if has_numbness:
+                headers.append("Facial Numbness")
+                active_columns.append('facial_numbness')
+            if has_cn_viii:
+                headers.append("CN VIII Muffle")
+                active_columns.append('snhl_hearing_clarity')
+            if has_fullness:
+                headers.append("Ear Fullness")
+                active_columns.
