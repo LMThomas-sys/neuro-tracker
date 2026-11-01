@@ -169,27 +169,3 @@ else:
             elements.append(Paragraph("<b>Personal Post-Op Recovery Report (Clean Clinical Summary)</b>", styles['Title']))
             elements.append(Paragraph(f"<b>Report Generated On:</b> {datetime.date.today()} (Unrecorded zero-value symptom columns automatically omitted)", styles['Normal']))
             elements.append(Spacer(1, 10))
-
-            # Dynamically check which symptoms actually have recorded data (> 0 or non-empty)
-            has_cn_v = (dataframe['trigeminal_pain'] > 0).any()
-            has_numbness = (dataframe['facial_numbness'] > 0).any()
-            has_cn_viii = (dataframe['snhl_hearing_clarity'] > 0).any()
-            has_fullness = (dataframe['ear_fullness'] > 0).any()
-            has_dizziness = (dataframe['dizziness_vertigo'] > 0).any()
-
-            # Build dynamic table headers based on active records
-            headers = ["Date & Time", "Session", "BP", "Pulse"]
-            active_columns = []
-
-            if has_cn_v:
-                headers.append("CN V Zap Pain")
-                active_columns.append('trigeminal_pain')
-            if has_numbness:
-                headers.append("Facial Numbness")
-                active_columns.append('facial_numbness')
-            if has_cn_viii:
-                headers.append("CN VIII Muffle")
-                active_columns.append('snhl_hearing_clarity')
-            if has_fullness:
-                headers.append("Ear Fullness")
-                active_columns.
